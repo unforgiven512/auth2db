@@ -2,10 +2,16 @@
 
 import MySQLdb
 
-CONFIG_HOST = "localhost"
-CONFIG_USER = "root"
-CONFIG_PASS = ""
-CONFIG_DB = "auth2db"
+# Load configuration from /etc/auth2db/auth2db.conf
+CONFIG_PATH = "/etc/auth2db/"
+config = ConfigObj(CONFIG_PATH+'auth2db.conf')
+config_filters = ConfigObj(CONFIG_PATH+"filters.conf")
+
+# Grab configuration information from config file
+CONFIG_HOST = config['CONFIG_HOST']
+CONFIG_DB = config['CONFIG_DB']
+CONFIG_USER = config['CONFIG_USER']
+CONFIG_PASS = config['CONFIG_PASS']
 
 def check_table(table):
     '''Verifica si la table existe'''
