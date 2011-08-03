@@ -2,6 +2,10 @@
 
 import MySQLdb
 
+# Import ConfigObj
+sys.path.insert(1,"/usr/share/auth2db/modules/")
+from configobj import ConfigObj
+
 # Load configuration from /etc/auth2db/auth2db.conf
 CONFIG_PATH = "/etc/auth2db/"
 config = ConfigObj(CONFIG_PATH+'auth2db.conf')
