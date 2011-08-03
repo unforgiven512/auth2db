@@ -1,0 +1,301 @@
+#!/usr/bin/python
+
+#  This program is free software; you can redistribute it and/or modify
+#  it under the terms of the GNU General Public License as published by
+#  the Free Software Foundation; either version 2 of the License, or
+#  (at your option) any later version.
+# 
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License for more details.
+# 
+#  You should have received a copy of the GNU General Public License
+#  along with this program; if not, write to the Free Software
+#  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
+
+#  Copyright (c) 2007,2008,2009,2010 Ezequiel Vera
+
+
+__author__ = "Ezequiel Vera"
+__version__ = "0.3.0"
+__date__ = "2010-06-10"
+__copyright__ = "Copyright (c) 2007,2008,2009,2010 Ezequiel Vera"
+__license__ = "GPL"
+
+
+import os
+import sys
+import string
+import MySQLdb
+
+sys.path.insert(1,'/usr/share/auth2db/modules/')
+
+from configobj import ConfigObj
+
+config = ConfigObj()
+config.filename = "/etc/auth2db/auth2db.conf"
+
+
+# Distribution Name
+def distro(archivo):
+    #distros_list = ('Debian','Ubuntu','Slackware','Backtrack','Suse','RedHat','Fedora')
+    distros_list = [['Debian',1],['Ubuntu',1],['Slackware',2],['Backtrack',2],['Suse',2],['RedHat',3],['Fedora',3]]
+    distro = ""
+    auth_code = 0
+    
+    #print distros_list[1][1]
+        
+    existe = os.path.exists(archivo)
+    
+    if existe:
+        f = open(archivo,'r')
+        dist = f.readlines()
+        
+        for i in range(0,len(distros_list)):
+            for distLine in dist:
+                valor = distLine.find(distros_list[i][0])
+                if valor >= 0:
+                    distro = distros_list[i][0]
+                    auth_code = distros_list[i][1]
+        
+        f.close()
+        
+    #else:
+        #print "no se encuentra /etc/issue"
+                
+    if (auth_code == 3):
+        print "\n"+distro
+        return "/var/log/secure"
+    elif (auth_code == 2):
+        print "\n"+distro
+        return "/var/log/messages"
+    elif (auth_code == 1):
+        print "\n"+distro
+        return "/var/log/auth.log"
+    else:
+        print ""
+        return "ko"
+
+
+
+# MySql Config
+print "[DATABASE CONFIG]"
+
+CONFIG_HOST = raw_input("MySql HOST [localhost]: ")
+if CONFIG_HOST == "":
+    CONFIG_HOST = "localhost"
+    config['CONFIG_HOST'] = "localhost"
+else:
+    config['CONFIG_HOST'] = CONFIG_HOST
+
+CONFIG_DB = raw_input("MySql DB [auth2db]: ")
+if CONFIG_DB == "":
+    CONFIG_DB = "auth2db"
+    config['CONFIG_DB'] = "auth2db"
+else:
+    config['CONFIG_DB'] = CONFIG_DB
+
+CONFIG_USER = raw_input("MySql USER [root]: ")
+if CONFIG_USER == "":
+    CONFIG_USER = "root"
+    config['CONFIG_USER'] = "root"
+else:
+    config['CONFIG_USER'] = CONFIG_USER
+    
+CONFIG_PASS = raw_input("MySql PASS []: ")
+if CONFIG_PASS == "":
+    CONFIG_PASS = ""
+    config['CONFIG_PASS'] = ""
+else:
+    config['CONFIG_PASS'] = CONFIG_PASS
+
+config['dbserver'] = CONFIG_HOST
+config['dbname'] = CONFIG_DB
+config['dbuser'] = CONFIG_USER
+config['dbpass'] = CONFIG_PASS
+
+# CONFIG SERVER
+print "\n[CONFIG AUTH2DB SERVER]" 
+print "(this option is to configure Database tables and Web frontend)"
+print "(not necessary for clients machines)"
+
+AUTH2DB_SERVER = "False"
+while AUTH2DB_SERVER != "y" and AUTH2DB_SERVER != "n":
+    AUTH2DB_SERVER = raw_input("Configure auth2db server? [y/n]: ")
+
+# -------------------------------
+config['ACTIVE_ALERTS'] = "N"
+# -------------------------------
+
+# ONLY IF AUTH2DB_SERVER == y (to config database tables and frontend)
+if AUTH2DB_SERVER == "y":
+    # AUTH2DB DATABASE
+    print "\n[AUTH2DB DATABASE]"
+
+    AUTH2DB_DATABASE = "False"
+    while AUTH2DB_DATABASE != "y" and AUTH2DB_DATABASE != "Y" and AUTH2DB_DATABASE != "n"and AUTH2DB_DATABASE != "N" and AUTH2DB_DATABASE != "":
+        AUTH2DB_DATABASE = raw_input("Create Auth2DB Tables Now? [Y/n]: ")
+
+    if AUTH2DB_DATABASE == "":
+        AUTH2DB_DATABASE = "Y"
+        #config['AUTH2DB_DATABASE'] = "Y"
+    #else:
+        #config['AUTH2DB_DATABASE'] = AUTH2DB_DATABASE
+
+    # ---------------------------------
+    # VALIDAR MySQLdb
+    # ---------------------------------
+    try:
+        conn = MySQLdb.connect (host = CONFIG_HOST,
+                                 user = CONFIG_USER,
+                                 passwd = CONFIG_PASS,
+                                 db = CONFIG_DB)
+    except MySQLdb.Error, e:
+        print "Error %d: %s" % (e.args[0], e.args[1])
+        if e.args[0] == 1045:
+            print "Check the Database user '"+CONFIG_USER+"' permission to continue."
+        if e.args[0] == 1049:
+            print "Create Database '"+CONFIG_DB+"' to continue."
+        if e.args[0] == 2005:
+            print "Check Database Host '"+CONFIG_HOST+"' to continue."
+        print "-"
+        sys.exit (1)
+
+
+    # connect
+    db = MySQLdb.connect(host=CONFIG_HOST, user=CONFIG_USER, passwd=CONFIG_PASS, db=CONFIG_DB)
+    # create a cursor
+    cursor = db.cursor()
+
+    tablas = (  ['login','/usr/share/doc/auth2db/sql/login.sql'],
+                ['log_0000_00_00','/usr/share/doc/auth2db/sql/log_0000_00_00.sql'],
+                ['alert','/usr/share/doc/auth2db/sql/alert.sql'],
+                ['alert_config','/usr/share/doc/auth2db/sql/alert_config.sql'],
+                ['geoip_cc','/usr/share/doc/auth2db/sql/geoip_cc.sql'],
+                ['geoip_ip','/usr/share/doc/auth2db/sql/geoip_ip.sql'],
+                ['host_config','/usr/share/doc/auth2db/sql/host_config.sql'],
+                ['smtp_config','/usr/share/doc/auth2db/sql/smtp_config.sql'],
+                ['users_audit','/usr/share/doc/auth2db/sql/users_audit.sql'],
+                ['users','/usr/share/doc/auth2db/sql/users.sql'],
+		['action_config','/usr/share/doc/auth2db/sql/action_config.sql'],
+		['reports','/usr/share/doc/auth2db/sql/reports.sql'],
+		['ac_role','/usr/share/doc/auth2db/sql/ac_role.sql'],
+		['ac_item','/usr/share/doc/auth2db/sql/ac_item.sql'],
+		['ac_mm_role_item','/usr/share/doc/auth2db/sql/ac_mm_role_item.sql'],
+		['list_config','/usr/share/doc/auth2db/sql/list_config.sql'],
+		['list_item','/usr/share/doc/auth2db/sql/list_item.sql'],
+		['tipo_action_config','/usr/share/doc/auth2db/sql/tipo_action_config.sql'],
+		['source','/usr/share/doc/auth2db/sql/source.sql'],
+		['filter','/usr/share/doc/auth2db/sql/filter.sql'],
+		['host','/usr/share/doc/auth2db/sql/host.sql'],
+		['mm_source_filter','/usr/share/doc/auth2db/sql/mm_source_filter.sql'],
+		['source_type','/usr/share/doc/auth2db/sql/source_type.sql'],
+		['view','/usr/share/doc/auth2db/sql/view.sql']
+                )
+
+    for table_name in tablas:
+        # execute SQL
+        sql = "SHOW TABLES LIKE '"+table_name[0]+"'"
+        cursor.execute(sql)
+        result = cursor.fetchall()
+        
+        create_table = "True"
+
+        for record in result:
+            #print record[0]
+            create_table = "False"
+        
+        if create_table == "True":
+            existe = os.path.exists(table_name[1])  
+            if existe:
+                os.system( "mysql -D "+CONFIG_DB+" -h "+CONFIG_HOST+" --user="+CONFIG_USER+" --password="+CONFIG_PASS+" < "+table_name[1] )
+                print " - Create table "+table_name[0]+" if not exists."
+
+    print "Tables for auth2db in Database '"+CONFIG_DB+"' READY."
+
+    # ---------------------------------
+
+
+    # WWW CONFIG
+    print "\n[PHP FRONT-END]"
+
+    WWW_CONFIG = "False"
+    while WWW_CONFIG != "y" and WWW_CONFIG != "Y" and WWW_CONFIG != "n"and WWW_CONFIG != "N" and WWW_CONFIG != "":
+        WWW_CONFIG = raw_input("Configure web front-end Now? [Y/n]: ")
+
+    if WWW_CONFIG == "":
+        WWW_CONFIG = "Y"
+        #config['WWW_CONFIG'] = "Y"
+    #else:
+        #config['WWW_CONFIG'] = WWW_CONFIG
+        
+    if WWW_CONFIG == "y" or WWW_CONFIG == "Y":
+        WWW_PATH_AUTH2DB = raw_input("Path to install web front-end: [/var/www/auth2db/] ")
+        if WWW_PATH_AUTH2DB == "":
+            WWW_PATH_AUTH2DB = "/var/www/auth2db/"
+            #config['WWW_PATH_AUTH2DB'] = "/var/www/auth2db/"
+        #else:
+            #config['WWW_PATH_AUTH2DB'] = WWW_PATH_AUTH2DB
+
+        existe = os.path.exists(WWW_PATH_AUTH2DB)  
+        if existe == False:
+            os.system("mkdir "+WWW_PATH_AUTH2DB )
+            print " - Create Dir "+WWW_PATH_AUTH2DB
+        os.system("cp /usr/share/doc/auth2db/www/* " + WWW_PATH_AUTH2DB)
+        print " - Copy Files to "+WWW_PATH_AUTH2DB
+        os.system("tar zxf "+WWW_PATH_AUTH2DB+"graph.tar.gz -C "+WWW_PATH_AUTH2DB)
+        print " - Extract "+WWW_PATH_AUTH2DB+"graph.tar.gz"
+        os.system("tar zxf "+WWW_PATH_AUTH2DB+"icons.tar.gz -C "+WWW_PATH_AUTH2DB)
+        print " - Extract "+WWW_PATH_AUTH2DB+"icons.tar.gz"
+        os.system("tar zxf "+WWW_PATH_AUTH2DB+"images.tar.gz -C "+WWW_PATH_AUTH2DB)
+        print " - Extract "+WWW_PATH_AUTH2DB+"images.tar.gz"
+        os.system("tar zxf "+WWW_PATH_AUTH2DB+"banderas.tar.gz -C "+WWW_PATH_AUTH2DB )
+        print " - Extract "+WWW_PATH_AUTH2DB+"banderas.tar.gz"
+	os.system("tar zxf "+WWW_PATH_AUTH2DB+"jscolor.tar.gz -C "+WWW_PATH_AUTH2DB )
+        print " - Extract "+WWW_PATH_AUTH2DB+"jscolor.tar.gz"
+        existe = os.path.exists(WWW_PATH_AUTH2DB+"images_tmp")  
+        if existe == False:
+            os.system("mkdir "+WWW_PATH_AUTH2DB+"images_tmp" )
+            print " - Create Dir "+WWW_PATH_AUTH2DB+"images_tmp for reports"
+        os.system("chown www-data.www-data "+WWW_PATH_AUTH2DB+"images_tmp" )
+        print " - Change www-data permission for dir "+WWW_PATH_AUTH2DB+"images_tmp "
+
+    # ALERTS
+    print "\n[ALERTS]"
+
+    ACTIVE_ALERTS = "False"
+    while ACTIVE_ALERTS != "y" and ACTIVE_ALERTS != "Y" and ACTIVE_ALERTS != "n"and ACTIVE_ALERTS != "N" and ACTIVE_ALERTS != "":
+        ACTIVE_ALERTS = raw_input("Activate Alerts? [Y/n]: ")
+
+    if ACTIVE_ALERTS == "":
+        ACTIVE_ALERTS = "Y"
+        config['ACTIVE_ALERTS'] = "Y"
+    else:
+        config['ACTIVE_ALERTS'] = ACTIVE_ALERTS
+
+    '''
+    # SEND_EMAIL
+    print "\n[MAILSERVER CONFIG]"
+    CONFIG_EMAIL = raw_input("Config an Email to send the error logs? [Y/n]: ")
+    if CONFIG_EMAIL == "":
+        config['CONFIG_EMAIL'] = "Y"
+    else:
+        config['CONFIG_EMAIL'] = CONFIG_EMAIL
+
+    if CONFIG_EMAIL == "" or CONFIG_EMAIL == "Y":
+        CONFIG_EMAIL_TO = raw_input("Email To: [email@domain.localhost]: ")
+        if CONFIG_EMAIL_TO == "":
+            config['CONFIG_EMAIL_TO'] = "email@domain.localhost"
+        else:
+            config['CONFIG_EMAIL_TO'] = CONFIG_EMAIL_TO
+    '''
+
+    # Experimental
+    config['UPDATE_IP_SSHD'] = "n"
+
+config.write()
+
+print "\nEDIT /etc/auth2db/filters.conf and config the filters."
+print "http://www.auth2db.com.ar"
+print ""

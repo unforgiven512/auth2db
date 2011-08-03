@@ -1,0 +1,175 @@
+                    _    _     ___     _  _
+        __ _  _  _ | |_ | |_  |_  ) __| || |__
+       / _` || || ||  _|| ' \  / / / _` || '_ \
+       \__,_| \_,_| \__||_||_|/___|\__,_||_.__/
+
+-------------------------------------------------------------
+Auth2DB (version 0.3.0)                           10/06/2010
+-------------------------------------------------------------
+
+ver. 0.3.0 (10/06/2010) - beta
+ ----------
+  + Search feature has been added.
+  * General status has been modified.
+  + Select Log Source feature has been added.
+  * All the logs from source are saved now.
+  * VIEW module has been changed.
+  * Huge logs bug has been fixed.
+  * ALERTS settings has been changed.
+  * Floatting box in views has been fixed.
+  + CORE error logs has been added.
+  + Views settings has been added.
+  + Thread checker has been added.
+  + Regex creator and tester has been added.
+  + Javascript colour picker has been added.
+  + Modules with scripts has been added.
+
+ver. 0.2.8 (22/04/2009) - beta
+ ----------
+  + Table tipo_action_config has been added.
+  + Table list_config has been added.
+  + Table list_item has been added.
+  + Statistinc Graph has been updated.
+  + New lists features has been added.
+  + New features to alerts has been added.
+  + New Security checks has been added.
+
+ver. 0.2.7 (18/03/2009) - beta
+ ----------
+  + Threads to auth2db has been added.
+  + Logs Tables per day.
+  + New Security Checks.
+  + Reports Alert Multiple Emails.
+  + Role Access Control has been added.
+  + New Chars library.
+  - GD Library has been removed.
+
+ver. 0.2.6 (14/10/2008) - beta
+ ----------
+  + Add Threads to auth2db. 
+  + Threads -d param added.
+  * Change Class Flag for Functions Flag (auth2db).
+  - FLAG Files Deleted.
+  - TMP Logs Files Deleted.
+
+ver. 0.2.5 (30/07/2008) - beta
+ ----------
+  + Add SQL Injection and XSS control.
+  + Add Realtime Row Limit.
+  + Add New Filters.
+  * Minor Fix in Advance View, Increase Performance.
+  * Fix updateipsshd function, Increase Performance.
+  - Disabled updateipsmbd function, Decrease Performance.
+
+ver. 0.2.4 (20/04/2008) - beta
+ ----------
+  + Add Reports table.
+  + Add Reports creator in frontend.
+  + Add Reports View.
+  + Update Settings Control Panel frontend (with report creator).
+  + Report Graph renamed to Statistic in Menu.
+  + Update frontend icons.
+  * Fix Filters Remote Syslog Hostname
+
+ver. 0.2.3 (17/04/2008) - beta
+ ----------
+  + Change frontend db connection.
+  + Update filters, and flag.d path. 
+  * FIX hardcoding year in frontend.
+  * FIX hardcoding year in statistic graph.
+	 
+ver. 0.2.2 (02/07/2007) - beta
+ ----------
+ + Table action_config has been added.
+ + Config actions (color and alias) has been added to the fron-end.
+ + Remote host can be controlled. (use syslogd -r option)
+ + New Filters to check windows login has been added. (use Remote Host with ntsyslog)
+ * Fix install process when create /var/www/auth2db Dir.
+
+ver. 0.2.1 (23/06/2007) - beta
+ ----------
+ + Control panel has been added to the front-end (config: hosts, users, alerts, smtp).
+ + A new install and configure proccess has been added (exec auth2db-config).
+ + Alerts checks has been added (to activate, change Y/n in auth2db.conf).
+ + New tables has been added for Alerts, Hosts config, Smtp config and Users config.
+ + Login has been added to the front-end.
+ + Alerts by email has been added. (configure smtp in front-end control panel)
+
+ver. 0.2.0 (12/06/2007) - beta
+ ----------
+ + A graphics report has been added to the front-end (php gd is needed). 
+ + Advanced and Simple views have been added to the front-end. 
+ + There are new options to configure the filters in the front-end. 
+ + An auth2db -v option for program details has been added. 
+ * There is a fix for filters.conf. 
+ * There is a fix for updateip functions (sshd and smbd sessions).
+
+ver. 0.1.9 (06/06/2007) - alpha
+ ----------
+ + Regex searches has been added. 
+ + Filter regexes can be configured in filters.conf. 
+ + A user can create her own regex search for any service. 
+ + Individual log configuration can be done in filters.conf for all types. 
+ - Log configuration from auth2db.conf has been removed. 
+ + Enabled and Disabled types were added in filters.conf. 
+ - Code has been cleaned.
+
+ver. 0.1.8 (01/06/2007) - alpha
+ ----------
+ * Flag register insert after MySQL insert has been fixed. 
+ + A check error validator before MySQL inserts has been added. 
+ + An error log has been added. 
+ + Email configuration in auth2db-config has been added. 
+ + Sending email to the admin if an error occurred has been added. 
+ + A graphic design has been added to the front-end.
+
+ver. 0.1.7 (27/05/2007) - alpha
+ ----------
+ + Type PROFTPD control has been added.
+ * FIX for APACHE control date parser.
+ + HIDE columns option ("machine" and "detail"), has been added to the PHP Front-end.
+ + Statistic has been updated at the PHP front-end.
+
+ver. 0.1.6 (26/05/2007) - alpha
+ ----------
+ + Type APACHE control has been added.
+ * FIX auth2db-config recognize the linux distribution and suggest the auth log path.
+ + Statistic at the PHP front-end has been added.
+
+ver. 0.1.5 (23/05/2007) - alpha
+ ----------
+ * MySQLdb connection has been validated.
+ * auth2db-config recognize the linux distribution and suggest the auth log path.
+
+ver. 0.1.4 (22/05/2007) - alpha
+----------
+ + CONFIG_AUTH_FILE to change the path of "auth.log", has been added 
+    (in /etc/auth2db/auth2db.conf)
+ + hostname with socket.gethostnmae() in auth2db, has been added 
+    (general method to know the hostname in differents distributions)
+
+ver. 0.1.3 (21/05/2007) - alpha
+----------
+ + Daemon has been added
+ * Fix PHP front-end flags images with file_exists()
+
+ver. 0.1.2 (20/05/2007) - alpha
+----------
+ + Daemon has been added
+ + A new installer in python has been added. (python setup.py install) 
+ + A session_start, at the PHP front-end, has been added.
+
+ver. 0.1.1 (18/05/2007) - alpha
+----------
+ * Se crea el flag...dat si no existe
+ * El parser es para cualquier tipo de Login (smbd, sshd, su, etc)
+ - Para el login de SSH usar auth.log para la "session" y para sacar la ip con "Accepted password + usuario"  
+    May  8 22:51:04 localhost sshd[11244]: Accepted password for z from 127.0.0.1 port 37474 ssh2
+    May  8 22:51:04 localhost sshd[11250]: (pam_unix) session opened for user z by (uid=0)
+ * Se actualizan las "session closed" con las "session opened" despues de actualizar con "Accepted password"
+ + Se creó auth2db-view para ver los registros en un shell
+ * El front-end PHP se actualiza con ajax cada 30 segundos.
+
+ver. 0.1.0 (15/05/2007) - alpha
+----------
+ + Initial release

@@ -1,0 +1,886 @@
+#!/usr/bin/python
+
+#  This program is free software; you can redistribute it and/or modify
+#  it under the terms of the GNU General Public License as published by
+#  the Free Software Foundation; either version 2 of the License, or
+#  (at your option) any later version.
+# 
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License for more details.
+# 
+#  You should have received a copy of the GNU General Public License
+#  along with this program; if not, write to the Free Software
+#  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
+
+#  Copyright (c) 2007 Ezequiel Vera
+
+#------------------------------------------------------------------------------
+#  Nombre: auth2db.py
+#  Autor: Ezequiel Vera (ezequielvera@yahoo.com.ar)
+#  Ult. Modificacion: 03/06/2007
+#  Description: Parsea el archivo auth.log en busca de logins (smb,ssh,su,login,gdm)
+#               y lo pasa a una base de datos mysql que permite listar y ordenar 
+#               los resultados.
+#------------------------------------------------------------------------------
+
+
+__author__ = "Ezequiel Vera"
+__version__ = "$Revision$"
+__date__ = "$Date$"
+__copyright__ = "Copyright (c) 2007 Ezequiel Vera"
+__license__ = "GPL"
+
+
+import MySQLdb
+import os
+import sys
+import string
+import time
+import datetime
+import traceback
+import socket
+
+sys.path.insert(1,"/usr/share/auth2db/modules/")
+
+from configobj import ConfigObj
+
+#CONFIG_AUTH_PATH = "/var/log/"
+CONFIG_PATH = "/etc/auth2db/"
+CONFIG_PATH_FLAG = CONFIG_PATH+"flag.d/"
+CONFIG_PATH_TMP = "/tmp/"
+
+config = ConfigObj(CONFIG_PATH+'auth2db.conf')
+
+# Carga en las variables el archivo config.dat
+CONFIG_HOST = config['CONFIG_HOST']
+CONFIG_DB = config['CONFIG_DB']
+CONFIG_USER = config['CONFIG_USER']
+CONFIG_PASS = config['CONFIG_PASS']
+CONFIG_AUTH_FILE = config['CONFIG_AUTH_FILE']
+CONFIG_AUTH_SMBD = config['CONFIG_AUTH_SMBD']
+CONFIG_AUTH_LOGIN = config['CONFIG_AUTH_LOGIN']
+CONFIG_AUTH_GDM = config['CONFIG_AUTH_GDM']
+CONFIG_AUTH_SSHD = config['CONFIG_AUTH_SSHD']
+CONFIG_AUTH_SU = config['CONFIG_AUTH_SU']
+CONFIG_AUTH_APACHE = config['CONFIG_AUTH_APACHE']
+CONFIG_AUTH_APACHE = config['CONFIG_AUTH_PROFTPD']
+CONFIG_EMAIL = config['CONFIG_EMAIL']
+
+if CONFIG_AUTH_APACHE == "Y":
+    LOG_FILE_APACHE = config['LOG_FILE_APACHE']
+CONFIG_AUTH_PROFTPD = config['CONFIG_AUTH_PROFTPD']
+
+if CONFIG_AUTH_PROFTPD == "Y":
+    LOG_FILE_PROFTPD = config['LOG_FILE_PROFTPD']
+
+if CONFIG_EMAIL == "Y":
+    CONFIG_EMAIL_TO = config['CONFIG_EMAIL_TO']
+    
+
+today = datetime.date.today()
+
+
+#print sys.argv
+#print sys.argv[1]
+
+# Auth Method: smbd, login, gdm, sshd, su
+#tipo = 'login'
+
+# VALIDAR CONECCION MySQLdb
+try:
+    conn = MySQLdb.connect (host = CONFIG_HOST,
+                             user = CONFIG_USER,
+                             passwd = CONFIG_PASS,
+                             db = CONFIG_DB)
+except MySQLdb.Error, e:
+     print "Error %d: %s" % (e.args[0], e.args[1])
+     sys.exit (1)
+    
+    
+
+def menu():
+    menu = """
+Select auth method(1-5):
+    1) smbd
+    2) login
+    3) gdm
+    4) sshd
+    5) su
+    6) apache
+    7) proftpd
+        
+Auth Method: """
+    #auth = int(raw_input(menu))
+    auth = raw_input(menu)
+
+    if auth == "1":
+        return "smbd"
+    elif auth == "2":
+        return "login" 
+    elif auth == "3":
+        return "gdm"
+    elif auth == "4":
+        return "sshd"
+    elif auth == "5":
+        return "su"
+    elif auth == "6":
+        return "apache" 
+    elif auth == "7":
+        return "proftpd" 
+    else: 
+        print "\n'"+auth+"' is not a valid auth method, try again\n"
+        return 0
+    
+# Arma la lista de los Auth Method configurados
+def listaauth():
+    listamethod = []
+    if CONFIG_AUTH_SMBD == "Y":
+        listamethod.append("smbd")
+    if CONFIG_AUTH_LOGIN == "Y":
+        listamethod.append("login")
+    if CONFIG_AUTH_GDM == "Y":
+        listamethod.append("gdm")
+    if CONFIG_AUTH_SSHD == "Y":
+        listamethod.append("sshd")
+    if CONFIG_AUTH_SU == "Y":
+        listamethod.append("su")
+    if CONFIG_AUTH_APACHE == "Y":
+        listamethod.append("apache")
+    if CONFIG_AUTH_PROFTPD == "Y":
+        listamethod.append("proftpd")
+    
+    return listamethod
+    
+    
+
+def mesreplace(s):
+    mes_string = ('Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec')
+    mes_number = ('01','02','03','04','05','06','07','08','09','10','11','12')
+    
+    for a, b in zip(mes_string, mes_number):
+        s = s.replace(a, b)
+    return s
+    
+class Send_Error:
+    "agrega registros en el archivo log de errores y controla que no se repitan. "
+    def __init__(self): 
+        self.send_error = ""
+        
+    def excepcion(self,lista,x,tipo_error):
+        error_flag = 0
+        
+        f_error = open( CONFIG_PATH + "error.d/error."+str(today)+".log" )
+        datos_error = f_error.read()
+        lista_error = string.split(datos_error, '\n')
+
+        for i_error in range(0,len(lista_error)):
+            if lista.replace('\n','') == lista_error[i_error]:
+                error_flag = 1
+        
+        if error_flag == 0:
+            print '[error]: ', x
+            os.system("echo '["+tipo_error+" error]: " + str(x) + "' >> "+CONFIG_PATH+"error.d/error."+str(today)+".log")
+            os.system("echo '" + lista + "' >> "+CONFIG_PATH+"error.d/error."+str(today)+".log")
+            self.send_error = 1
+
+    def send(self):
+        if self.send_error == 1:
+            os.system("mail "+CONFIG_EMAIL_TO+" -s '[auth2db error]' < "+CONFIG_PATH+"error.d/error."+str(today)+".log")            
+    	    print "Please send the /etc/auth2db/error.d/error."+str(today)+".log to the Developers."
+    	    print "For check and FIX Auth2DB."
+    	    print "Thanks. \n\n"
+
+
+class Flag:
+    "Controla las banderas del ultimo insert"
+    def __init__(self): 
+        self.existe = ""
+        self.f = ""
+        self.flag = ""
+        self.datos = ""
+        self.lista = ""
+        self.str = ""
+        self.line_flag = ""
+        self.i = ""     
+        self.str = ""
+        self.tipo = ""
+        
+    def flaginiciar(self):
+        self.existe = os.path.exists(CONFIG_PATH_FLAG+"flag."+self.tipo+self.str+".dat")  
+
+        if self.existe:
+            self.f = open(CONFIG_PATH_FLAG+"flag."+self.tipo+self.str+".dat",'r')
+            self.flag = self.f.readline()
+            if self.flag == "":
+                os.system("echo 'ok' > "+CONFIG_PATH_FLAG+"flag."+self.tipo+self.str+".dat")
+        else:
+            os.system("echo 'ok' > "+CONFIG_PATH_FLAG+"flag."+self.tipo+self.str+".dat")           
+
+    def flaginsertar(self, linea):
+        self.f = open( CONFIG_PATH_TMP+self.tipo+self.str+'.log' )
+        self.datos = self.f.read()
+        self.lista = string.split(self.datos, '\n')
+        
+        self.bandera = "echo '" + self.lista[linea] + "' > "+CONFIG_PATH_FLAG+"flag."+self.tipo+self.str+".dat"
+        os.system(self.bandera) 
+
+    def flagcheck(self):
+        self.f = open(CONFIG_PATH_FLAG+"flag."+self.tipo+self.str+".dat",'r')
+        self.line_flag = self.f.readline()
+
+        self.f = open( CONFIG_PATH_TMP+self.tipo+self.str+'.log' )
+        self.datos = self.f.read()
+        self.lista = string.split(self.datos, '\n')
+
+        self.flag = ''
+        for self.i in range(0,len(self.lista)):
+           #os.system("echo '"+line_flag+str(len(line_flag))+" - "+lista[i]+str(len(lista[i]))+"' >> test.txt")
+            if self.line_flag.replace('\n','') == self.lista[self.i]:
+                self.flag = self.i
+
+        return self.flag
+
+
+def updateipsmbd():
+    # connect
+    db = MySQLdb.connect(host=CONFIG_HOST, user=CONFIG_USER, passwd=CONFIG_PASS, db=CONFIG_DB)
+
+    # create a cursor
+    cursor = db.cursor()
+    # execute SQL
+    sql = "SELECT distinct pid,usuario from login WHERE (ip is NULL OR ip = '' OR ip = '-') AND tipo = 'smbd'";
+    cursor.execute(sql)
+    result = cursor.fetchall()
+    
+    for record in result:
+        #print str(record[0])+" "+record[1]
+        pid = str(record[0])
+        usuario = record[1]
+        
+        os.system("grep -r "+pid+" /var/log/samba/* > "+CONFIG_PATH_TMP+"tmpfile")
+        f = open(CONFIG_PATH_TMP+"tmpfile")
+        tmp = f.readline()
+            
+        if tmp != "":
+            
+            pos = tmp.index(":")
+            linea = tmp[pos+3:len(tmp)]
+
+            linea_array = string.split(linea, ' ')
+            machine = linea_array[0]
+            
+            ip = linea_array[1].replace("(","")
+            ip = ip.replace(")","")
+            
+            actualiza = db.cursor()
+            sql = "UPDATE login SET ip='"+ip+"', machine='"+machine+"' WHERE pid='"+pid+"' AND usuario='"+usuario+"'"
+            actualiza.execute(sql)
+        else:
+            actualiza = db.cursor()
+            sql = "UPDATE login SET ip='0.0.0.0' WHERE pid='"+pid+"' AND usuario='"+usuario+"'"
+            actualiza.execute(sql)
+        
+def updateipsshd():
+    # connect
+    db = MySQLdb.connect(host=CONFIG_HOST, user=CONFIG_USER, passwd=CONFIG_PASS, db=CONFIG_DB)
+
+    # create a cursor
+    cursor = db.cursor()
+    # execute SQL
+    sql = "SELECT fecha,usuario,ip from login WHERE tipo = 'sshd' AND action = 'Accepted' AND fecha in (select distinct fecha from login WHERE (ip is NULL OR ip = '') AND tipo = 'sshd')";
+    cursor.execute(sql)
+    result = cursor.fetchall()
+    
+    for record in result:
+        actualiza = db.cursor()
+
+        fecha = str(record[0])
+        usuario = record[1]
+        ip = record[2]
+        
+        sql = "UPDATE login SET ip='"+ip+"' WHERE fecha='"+fecha+"' AND usuario='"+usuario+"'"
+        actualiza.execute(sql)
+    
+    # create a cursor
+    cursor = db.cursor()
+    # execute SQL
+    sql = "SELECT distinct pid,usuario,ip from login WHERE tipo = 'sshd' AND action = 'opened' AND ip is not NULL AND ip <> '' AND pid in (select distinct pid from login WHERE (ip is NULL OR ip = '') AND tipo = 'sshd')";
+    cursor.execute(sql)
+    result = cursor.fetchall()
+    
+    for record in result:
+        actualiza = db.cursor()
+
+        pid = str(record[0])
+        usuario = record[1]
+        ip = record[2]
+        
+        sql = "UPDATE login SET ip='"+ip+"' WHERE pid='"+pid+"' AND usuario='"+usuario+"'"
+        actualiza.execute(sql)
+    
+    
+#-----------------------------------------------
+# Type: SMBD, SSHD, LOGIN, SU, GDM 
+# Action: opened/closed
+#-----------------------------------------------
+# Example
+# May 31 18:52:23 localhost su[7555]: (pam_unix) session opened for user root by (uid=0)
+# May 31 18:53:45 localhost su[7555]: (pam_unix) session closed for user root
+
+# May 27 00:01:05 localhost gdm[5218]: (pam_unix) session opened for user z by (uid=0)
+# May 27 10:49:39 localhost gdm[5218]: (pam_unix) session closed for user z
+
+# May 31 20:57:02 localhost login[4763]: (pam_unix) session opened for user root by (uid=0)
+
+
+
+
+def parserauthsession(lista,tipo):
+    cantidad = 0
+    
+    desde = obj_flag.flagcheck()
+    
+    if desde == '':
+        desde = 0
+    else:
+        desde = desde + 1
+
+
+    # connect
+    db = MySQLdb.connect(host=CONFIG_HOST, user=CONFIG_USER, passwd=CONFIG_PASS, db=CONFIG_DB)
+
+    # create a cursor
+    cursor = db.cursor()
+
+
+    for i in range(desde,len(lista)):
+        
+        if lista[i] != "":
+            
+            #cantidad = cantidad + 1
+            flag = i
+            
+            # parser fecha
+            fecha = lista[i].replace('  ',' ')
+            fecha_array = string.split(fecha, ' ')
+            fecha = time.strftime('%Y') +'-'+ mesreplace(fecha_array[0]) +'-'+ fecha_array[1]+' '+fecha_array[2]
+        #    print 'fecha: ' + fecha
+        
+            # server name
+            server = socket.gethostname()
+
+            # parser tipo
+            pos_start = lista[i].index(tipo+'[')
+            pos_end = lista[i].index('[')
+            tipo = lista[i][pos_start:pos_end]
+        #    print 'tipo: ' + tipo
+
+            # parser pid
+            pos_start = lista[i].index(tipo+'[')
+            pos_end = lista[i].index(']:')
+            pid = lista[i][pos_start+(len(tipo)+1):pos_end]
+        #    print 'pid: ' + pid
+
+            # parser action
+            pos = lista[i].index('session')
+            action = lista[i][pos+8:len(lista[i])]
+            action_array = string.split(action,' ')
+            action = action_array[0]
+        #    print 'action: ' + action
+
+
+            # parser usuario
+            pos = lista[i].index('user')
+            usuario = lista[i][pos+5:len(lista[i])]
+            usuario_array = string.split(usuario,' ')
+            usuario = usuario_array[0]
+        #    print 'usuario: ' + usuario
+
+            # parser detalle
+            pos = lista[i].index(']:')
+            detalle = lista[i][pos+3:len(lista[i])]
+        #    print 'detalle: ' + detalle
+
+            # execute SQL
+            try:
+                sql = "INSERT INTO login (fecha,server,tipo,pid,action,usuario,detalle) VALUES('"+fecha+"','"+server+"','"+tipo+"','"+pid+"','"+action+"','"+usuario+"','"+detalle+"')"
+                cursor.execute(sql)
+                
+                cantidad = cantidad + 1
+                obj_flag.flaginsertar(flag)
+            
+            except NameError, x:
+                #llama al objeto Send_Error()
+                obj_send_email.excepcion(lista[i],x,str(tipo))
+    
+        
+    print "cantidad session:",cantidad
+
+#-----------------------------------------------
+
+
+#-----------------------------------------------
+# Type: SSHD 
+# Action: Failed/Accepted
+#-----------------------------------------------
+# Example
+# May 10 21:51:28 websrv sshd[12965]: Accepted keyboard-interactive/pam for z from ::ffff:190.51.26.130 port 50582 ssh2
+# May 10 18:26:34 websrv sshd[10616]: Failed password for illegal user sales from ::ffff:211.154.43.201 port 39500 ssh2
+
+
+def parserauthpassword(lista,tipo):
+        
+    cantidad = 0
+    
+    #desde = flagcheckpassword()
+    obj_flag_pass.tipo = tipo
+    desde = obj_flag_pass.flagcheck()
+    #desde = ''
+    if desde == '':
+        desde = 0
+    else:
+        desde = desde + 1
+
+
+    for i in range(desde,len(lista)):
+        
+        if lista[i] != "":
+            #print lista[i]
+            
+            #cantidad = cantidad + 1
+            flag = i
+            
+            # parser fecha
+            fecha = lista[i].replace('  ',' ')
+            fecha_array = string.split(fecha, ' ')
+            fecha = time.strftime('%Y') +'-'+ mesreplace(fecha_array[0]) +'-'+ fecha_array[1]+' '+fecha_array[2]
+            #print 'fecha: ' + fecha
+        
+            # server name
+            server = socket.gethostname()
+            #print 'server: ' + server 
+        
+            # parser tipo
+            pos_start = lista[i].index(tipo+'[')
+            pos_end = lista[i].index('[')
+            tipo = lista[i][pos_start:pos_end]
+            #print 'tipo: ' + tipo
+
+            # parser pid
+            pos_start = lista[i].index(tipo+'[')
+            pos_end = lista[i].index(']:')
+            pid = lista[i][pos_start+(len(tipo)+1):pos_end]
+            #print 'pid: ' + pid
+
+            # parser action            
+            pos = lista[i].index(']:')
+            detalle = lista[i][pos+3:len(lista[i])]
+            detalle = string.replace(detalle,'illegal user ','')
+            detalle = string.replace(detalle,'illegal ','')
+            detalle = string.replace(detalle,'invalid user ','')
+            detalle = string.replace(detalle,'invalid ','')
+            detalle_array = string.split(detalle, ' ')
+            action = detalle_array[0] #+ " " + detalle_array[1]
+            #print 'action: ' + action
+
+            # parser usuario
+            usuario = detalle_array[3]
+            #print 'usuario: ' + usuario
+            
+            # parser ip
+            ip = string.replace(detalle_array[5],'::ffff:','')
+            #print 'ip: ' + ip
+
+            # parser detalle
+            pos = lista[i].index(']:')
+            detalle = lista[i][pos+3:len(lista[i])]
+            #print 'detalle: ' + detalle
+
+            # connect
+            db = MySQLdb.connect(host=CONFIG_HOST, user=CONFIG_USER, passwd=CONFIG_PASS, db=CONFIG_DB)
+
+            # create a cursor
+            cursor = db.cursor()
+            # execute SQL
+            try:
+                sql = "INSERT INTO login (fecha,server,tipo,pid,action,usuario,ip,detalle) VALUES('"+fecha+"','"+server+"','"+tipo+"','"+pid+"','"+action+"','"+usuario+"','"+ip+"','"+detalle+"')"
+                cursor.execute(sql)
+                
+                cantidad = cantidad + 1
+                obj_flag_pass.flaginsertar(flag)
+            
+            except NameError, x:
+                #llama al objeto Send_Error()
+                obj_send_email.excepcion(lista[i],x,str(tipo))
+    
+    
+    print "cantidad password:",cantidad
+
+#-----------------------------------------------
+
+
+#--------------------------------------------
+# Type: APACHE
+# Action: failure/not found
+#--------------------------------------------
+
+def parserauthapache(lista,tipo):
+        
+    cantidad = 0
+    
+    desde = obj_flag.flagcheck()
+
+    if desde == '':
+        desde = 0
+    else:
+        desde = desde + 1
+
+
+    for i in range(desde,len(lista)):
+        
+        if lista[i] != "":
+            #print lista[i]
+            
+            #cantidad = cantidad + 1
+            flag = i
+            
+            # parser fecha
+            pos_start = lista[i].index('[')            
+            pos_end = lista[i].index('] ')
+            fecha = lista[i][pos_start+2:pos_end]
+            fecha = string.replace(fecha,'  ',' ')
+            fecha_array = string.split(fecha, ' ')
+            fecha = fecha_array[4]+"-"+mesreplace(fecha_array[1])+"-"+fecha_array[2]+" "+fecha_array[3] 
+            #print 'fecha: ' + fecha
+        
+            # server name
+            server = socket.gethostname()
+            #print 'server: ' + server 
+        
+            # parser tipo
+            #print 'tipo: ' + tipo
+
+            # parser pid
+            pid = "0"
+            #print 'pid: ' + pid
+
+            # parser action            
+            if lista[i].find('authentication failure') > -1:
+                action = "failure"
+            if lista[i].find('not found') > -1:
+                action = "not found"
+            #print 'action: ' + action
+
+            # parser usuario
+            pos_start = lista[i].index('user')            
+            usuario = lista[i][pos_start:len(lista[i])]
+            usuario = string.replace(usuario,':','')
+            usuario = string.split(usuario, ' ')
+            usuario = usuario[1]
+            #print 'usuario: ' + usuario
+            
+            # parser ip
+            pos_start = lista[i].index('[client')            
+            ip = lista[i][pos_start:len(lista[i])]
+            ip = string.replace(ip,']','')
+            ip = string.split(ip, ' ')
+            ip = ip[1]
+            #ip = string.replace(detalle_array[5],'::ffff:','')
+            #print 'ip: ' + ip
+            
+            # parser detalle
+            pos = lista[i].index('user')
+            detalle = lista[i][pos:len(lista[i])]
+            #print 'detalle: ' + detalle
+
+            # connect
+            db = MySQLdb.connect(host=CONFIG_HOST, user=CONFIG_USER, passwd=CONFIG_PASS, db=CONFIG_DB)
+
+            # create a cursor
+            cursor = db.cursor()
+            # execute SQL
+            try:
+                sql = "INSERT INTO login (fecha,server,tipo,pid,action,usuario,ip,detalle) VALUES('"+fecha+"','"+server+"','"+tipo+"','"+pid+"','"+action+"','"+usuario+"','"+ip+"','"+detalle+"')"
+                cursor.execute(sql)
+
+                cantidad = cantidad + 1
+                obj_flag.flaginsertar(flag)
+                
+            except NameError, x:
+                #llama al objeto Send_Error()
+                obj_send_email.excepcion(lista[i],x,str(tipo))
+    
+     
+    print "cantidad:",cantidad
+
+
+#-----------------------------------------------
+
+#-----------------------------------------------
+# Type: PROFTP
+# Action: Login successful / Incorrect password
+#-----------------------------------------------
+# Example
+# May 27 00:58:56 debian proftpd[14329] localhost (localhost[127.0.0.1]): USER test: Login successful.
+# May 27 01:00:30 debian proftpd[14335] localhost (localhost[127.0.0.1]): USER test (Login failed): Incorrect password.
+# May 19 14:42:00 debian proftpd[17613] localhost (....net[68.20.0.170]): USER Administrator: no such user found from ppp-68-20-0-170.dsl.emhril.ameritech.net [68.20.0.170] to 192.168.1.4:21
+# May 27 00:53:01 debian proftpd[14235] localhost (localhost[127.0.0.1]): SECURITY VIOLATION: root login attempted.
+# May 19 14:42:03 debian proftpd[17614] localhost (ppp-68-20-0-170.dsl.emhril.ameritech.net[68.20.0.170]): no such user 'Administrator'
+# May 27 01:00:34 debian proftpd[14335] localhost (localhost[127.0.0.1]): FTP session closed.
+
+def parserauthproftpd(lista,tipo):
+    
+    cantidad = 0
+    
+    #obj_flag3 = Flag()
+    desde = obj_flag.flagcheck()
+    #desde = flagcheck()
+    
+    if desde == '':
+        desde = 0
+    else:
+        desde = desde + 1
+
+
+    # connect
+    db = MySQLdb.connect(host=CONFIG_HOST, user=CONFIG_USER, passwd=CONFIG_PASS, db=CONFIG_DB)
+
+    # create a cursor
+    cursor = db.cursor()
+
+
+    for i in range(desde,len(lista)):
+        
+        if lista[i] != "":
+            
+            flag = i
+            
+            # parser fecha
+            fecha = lista[i].replace('  ',' ')
+            fecha_array = string.split(fecha, ' ')
+            fecha = time.strftime('%Y') +'-'+ mesreplace(fecha_array[0]) +'-'+ fecha_array[1]+' '+fecha_array[2]
+            #print 'fecha: ' + fecha
+        
+            # server name
+            server = socket.gethostname()
+
+            # parser tipo
+            #print 'tipo: ' + tipo
+
+            # parser pid
+            pos_start = lista[i].index(tipo+'[')
+            pos_end = lista[i].index(']')
+            pid = lista[i][pos_start+(len(tipo)+1):pos_end]
+            #print 'pid: ' + pid
+
+            # parser action
+            if lista[i].find('Login successful') > -1:
+                action = "Login successful"
+            if lista[i].find('Incorrect password') > -1:
+                action = "Incorrect password"
+            if string.lower(lista[i]).find('no such user') > -1:
+                action = "no such user"
+            
+            #print 'action: ' + action
+
+
+            # parser usuario
+            pos = lista[i].index('USER')
+            usuario = lista[i][pos+5:len(lista[i])]
+            usuario_array = string.split(usuario,' ')
+            usuario = usuario_array[0]
+            usuario = string.replace(usuario,':','')
+            #print 'usuario: ' + usuario
+
+            # parser ip
+            pos_start = lista[i].index('(')
+            pos_end = lista[i].index(')')
+            ip = lista[i][pos_start:pos_end]
+            pos_start = ip.index('[')
+            pos_end = ip.index(']')
+            ip = ip[pos_start+1:pos_end]
+            #print 'ip: ' + ip
+
+            # parser detalle
+            pos = lista[i].index('):')
+            detalle = lista[i][pos+3:len(lista[i])]
+            #print 'detalle: ' + detalle
+
+            # execute SQL o captura el error y lo guarda en un log /etc/auth2db/error.(date).log
+            try:
+                sql = "INSERT INTO login (fecha,server,tipo,pid,action,usuario,ip,detalle) VALUES('"+fecha+"','"+server+"','"+tipo+"','"+pid+"','"+action+"','"+usuario+"','"+ip+"','"+detalle+"')"
+                cursor.execute(sql)
+                
+                cantidad = cantidad + 1
+                obj_flag.flaginsertar(flag)
+                
+            except NameError, x:
+                #llama al objeto Send_Error()
+                obj_send_email.excepcion(lista[i],x,str(tipo))
+                
+                
+    print "cantidad session:",cantidad
+    
+#-----------------------------------------------------
+    
+
+# Objeto "Flag()" Global
+obj_flag = Flag()
+obj_flag_pass = Flag()
+
+# Objeto "Send()" Global
+obj_send_email = Send_Error()
+
+
+
+def main():
+    
+    # Evalua si se paso el argumento --debug
+    if len(sys.argv) > 1 and sys.argv[1] == "--debug":
+        lista_auth = menu()
+        lista_auth = (lista_auth,)
+    else:
+        #lista_auth = ('login','sshd','gdm','su')
+        lista_auth = listaauth()
+    
+    
+    for i in range(0,len(lista_auth)):
+        
+        tipo = lista_auth[i]
+        print tipo
+        # Si el auth method es correcto comienza el programa
+        if tipo != 0:        
+        #if tipo == 22345:
+            
+            print datetime.datetime.now()        
+                    
+            # Controla que se encuentre el archivo auth.log
+            #existeauth = os.path.exists(CONFIG_AUTH_PATH+"auth.log")  
+            existeauth = os.path.exists(CONFIG_AUTH_FILE)  
+            if existeauth == 0:
+                print "\nEl archivo '"+CONFIG_AUTH_FILE+"' no se encuentra en el path \n"
+                sys.exit()    
+            
+            
+            # crea el archivo con los datos a parsear       
+            #tipo = menu()        
+            #os.system("grep 'pam_unix' "+CONFIG_AUTH_PATH+"auth.log |grep '"+tipo+"\[' |grep 'session' > "+CONFIG_PATH_TMP+tipo+".log")
+            #if tipo == "sshd":
+            #    os.system("grep 'sshd' "+CONFIG_AUTH_PATH+"auth.log |grep '"+tipo+"\[' |grep -E 'password|keyboard-interactive/pam' > "+CONFIG_PATH_TMP+tipo+".password.log")
+
+            os.system("grep 'pam_unix' "+CONFIG_AUTH_FILE+" |grep '"+tipo+"\[' |grep 'session' > "+CONFIG_PATH_TMP+tipo+".log")
+            
+
+            # inicia las banderas si no existen
+            obj_flag.tipo = tipo
+            obj_flag.flaginiciar()
+            #flaginiciar()
+
+
+            # carga en una variable los datos a parsear 
+            f = open( CONFIG_PATH_TMP+tipo+'.log' )
+            datos = f.read()
+            
+            # carga en una lista cada renglon a parsear
+            lista = string.split(datos, '\n')
+            
+                
+            if tipo != "apache" and tipo != "proftpd":
+                parserauthsession(lista,tipo)
+                
+                
+            # -------------------------------------
+            # SSHD 
+            # -------------------------------------
+            
+            if tipo == "sshd":
+                os.system("grep 'sshd' "+CONFIG_AUTH_FILE+" |grep '"+tipo+"\[' |grep -E 'password|keyboard-interactive/pam' > "+CONFIG_PATH_TMP+tipo+".password.log")
+                
+            if tipo == "sshd":
+                #flaginiciarpassword(".password")
+                obj_flag_pass.tipo = tipo
+                obj_flag_pass.str = ".password"
+                obj_flag_pass.flaginiciar()
+
+
+            # carga en una variable los datos a parsear si tipo=sshd para action=Accepted/Failed
+            # esta debe ir primero que el insert tipo="session opened/close" 
+            # para que el orden de ejecucion en el sistema sea el mismo
+            if tipo == "sshd":
+                fpass = open( CONFIG_PATH_TMP+tipo+'.password.log' )
+                datospass = fpass.read()
+                listpass = string.split(datospass, '\n')
+                
+            #se le pasa como variables la lista y el tipo si tipo=sshd para action=Accepted/Failed
+            
+            if tipo == "sshd":
+                parserauthpassword(listpass,"sshd")
+            
+            # END SSHD --------------------------------
+                
+                
+            # ---------------------------------------
+            # APACHE 
+            # ---------------------------------------
+
+            if tipo == "apache":
+                #os.system("grep -E '' > "+CONFIG_PATH_TMP+tipo+".password.log")
+                #os.system("grep -E 'user .*(authentication failure|not found)' /var/log/apache2/* > "+CONFIG_PATH_TMP+tipo+".log")
+                os.system("grep -E 'user .*(authentication failure|not found)' "+LOG_FILE_APACHE+" > "+CONFIG_PATH_TMP+tipo+".log")
+            
+            if tipo == "apache":
+                fpass = open( CONFIG_PATH_TMP+tipo+'.log' )
+                datospass = fpass.read()
+                listpass = string.split(datospass, '\n')
+                
+            if tipo == "apache":
+                parserauthapache(listpass,"apache")
+            
+            # END APACHE ----------------------------
+            
+            
+            # ----------------------------------------
+            # PROFTPD 
+            # ----------------------------------------            
+            if tipo == "proftpd":
+                #os.system("grep ']): USER' /var/log/proftpd.log > "+CONFIG_PATH_TMP+tipo+".log")
+                os.system("grep ']): USER' "+LOG_FILE_PROFTPD+" > "+CONFIG_PATH_TMP+tipo+".log")
+
+            if tipo == "proftpd":
+                fpass = open( CONFIG_PATH_TMP+tipo+'.log' )
+                datospass = fpass.read()
+                listpass = string.split(datospass, '\n')
+
+            if tipo == "proftpd":
+                parserauthproftpd(listpass,"proftpd")
+
+            # END PROFTPD ----------------------------
+
+
+            #Actualiza smbd con los datos de action=Accepted
+            if tipo == "smbd":
+                updateipsmbd()
+                
+            if tipo == "sshd":
+                updateipsshd()
+
+            print datetime.datetime.now()
+        
+        print "\n"
+    
+    
+    if CONFIG_EMAIL == "Y":
+        obj_send_email.send()
+
+
+
+#Esta linea lanza la funcion principal si aun no esta lanzada
+#if __name__ == '__main__': main()
+if __name__ =='__main__':
+    try:
+        main()
+    except:
+        # print error message re exception
+        traceback.print_exc()

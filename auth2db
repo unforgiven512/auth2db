@@ -1,0 +1,1536 @@
+#!/usr/bin/python
+# -*- coding: utf-8 -*-
+
+#  This program is free software; you can redistribute it and/or modify
+#  it under the terms of the GNU General Public License as published by
+#  the Free Software Foundation; either version 2 of the License, or
+#  (at your option) any later version.
+# 
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License for more details.
+# 
+#  You should have received a copy of the GNU General Public License
+#  along with this program; if not, write to the Free Software
+#  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
+
+#  Copyright (c) 2007,2008,2009,2010 Ezequiel Vera
+
+#------------------------------------------------------------------------------
+#  Nombre: auth2db.py
+#  Autor: Ezequiel Vera (ezequielvera@yahoo.com.ar)
+#  Ult. Modificacion: 10/06/2010
+#  Description: Parsea el archivo auth.log en busca de logins (smb,ssh,su,login,gdm)
+#               y lo pasa a una base de datos mysql que permite listar y ordenar 
+#               los resultados.
+#------------------------------------------------------------------------------
+
+
+__author__ = "Ezequiel Vera"
+__version__ = "0.3.0"
+__date__ = "2010-06-10"
+__copyright__ = "Copyright (c) 2007,2008,2009,2010 Ezequiel Vera"
+__license__ = "GPL"
+
+
+import MySQLdb
+import os
+import sys
+import string
+import time
+import datetime
+import traceback
+import socket
+import re
+import smtplib
+import codecs
+import threading, random
+import commands
+
+
+sys.path.insert(1,"/usr/share/auth2db/modules/")
+from configobj import ConfigObj
+
+#sys.path.insert(1,"scripts/")
+sys.path.insert(1,"/usr/share/auth2db/scripts/")
+import cleaner
+import monitor
+import alert
+
+#CONFIG_AUTH_PATH = "/var/log/"
+CONFIG_PATH = "/etc/auth2db/"
+
+###CONFIG_PATH_FLAG = "/var/lib/auth2db/flag.d/"
+
+###CONFIG_PATH_TMP = "/var/lib/auth2db/tmp/"
+
+
+config = ConfigObj(CONFIG_PATH+'auth2db.conf')
+config_filters = ConfigObj(CONFIG_PATH+"filters.conf")
+
+# Carga en las variables el archivo config.dat
+CONFIG_HOST = config['CONFIG_HOST']
+CONFIG_DB = config['CONFIG_DB']
+CONFIG_USER = config['CONFIG_USER']
+CONFIG_PASS = config['CONFIG_PASS']
+
+UPDATE_IP_SSHD = config['UPDATE_IP_SSHD']
+
+ACTIVE_ALERTS = config['ACTIVE_ALERTS']
+
+today = datetime.date.today()
+
+# VALIDAR CONECCION MySQLdb
+try:
+	conn = MySQLdb.connect (host = CONFIG_HOST,
+	                        user = CONFIG_USER,
+	                        passwd = CONFIG_PASS,
+	                        db = CONFIG_DB)
+except MySQLdb.Error, e:
+	print "Error %d: %s" % (e.args[0], e.args[1])
+	sys.exit (1)
+
+
+def mesreplace(s):
+	mes_string = ('Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec')
+	mes_number = ('01','02','03','04','05','06','07','08','09','10','11','12')
+
+	for a, b in zip(mes_string, mes_number):
+		s = s.replace(a, b)
+	return s
+
+
+def send_email(subject,email,msg_body):
+
+	import smtplib
+	from email.MIMEText import MIMEText
+
+	# connect
+	db = MySQLdb.connect(host=CONFIG_HOST, user=CONFIG_USER, passwd=CONFIG_PASS, db=CONFIG_DB)
+	# create a cursor
+	cursor = db.cursor(MySQLdb.cursors.DictCursor)
+	# execute SQL
+	sql = "SELECT * from smtp_config "
+	cursor.execute(sql)
+	result = cursor.fetchall()
+
+	for record in result:
+		smtp_server = record["smtp_server"]
+		port_server = record["smtp_port"]
+		mail_from = record["mail_from"]
+		auth_active = record["auth_active"]
+		auth_user = record["auth_user"]
+		auth_pass = record["auth_pass"]
+
+	msg = MIMEText(msg_body)
+
+	msg['Subject'] = str(subject)
+	msg['From'] = mail_from
+	msg['Reply-to'] = mail_from
+	msg['To'] = str(email)
+
+	s = smtplib.SMTP()
+	s.connect(smtp_server)
+
+	# if required authenticate
+	if auth_active == 1:
+		s.login(auth_user,auth_pass)
+
+	if email == "":
+		email = mail_from
+
+	# Send the email - real from, real to, extra headers and content ...
+	s.sendmail(mail_from, str(email), msg.as_string())
+	s.close()
+
+def CORE_LOGS(data):
+	filename = "/var/log/auth2db.log"
+
+
+	try:
+		year = data_extract.group('year')
+	except:
+		year = time.strftime('%Y')
+
+	try:
+		month = mesreplace(data_extract.group('month'))
+	except:
+		month = time.strftime('%m')
+
+	if len(month) == 1:
+		month = "0"+month
+
+	try:
+		day = data_extract.group('day')
+	except:
+		day = time.strftime('%d')
+
+	if len(day) == 1:
+		day = "0"+day
+
+	try:
+		hour = data_extract.group('hour')
+	except:
+		hour = time.strftime('%H:%M:%S')
+
+	fecha = year + "-" + month + "-" + day + " " + hour 
+
+	file = open(filename, 'a')
+	file.write( fecha  + " | " + str(data) + "\n")
+
+
+class Send_Error:
+	"agrega registros en el archivo log de errores y controla que no se repitan. "
+	def __init__(self): 
+		self.send_error = ""
+
+	def excepcion(self,lista,x,tipo_error):
+		error_flag = 0
+
+		f_error = open( CONFIG_PATH + "error.d/error."+str(today)+".log" )
+		datos_error = f_error.read()
+		lista_error = string.split(datos_error, '\n')
+
+		for i_error in range(0,len(lista_error)):
+			if lista.replace('\n','') == lista_error[i_error]:
+				error_flag = 1
+
+		if error_flag == 0:
+			print '[error]: ', x
+			os.system("echo '["+tipo_error+" error]: " + str(x) + "' >> "+CONFIG_PATH+"error.d/error."+str(today)+".log")
+			os.system("echo '" + lista + "' >> "+CONFIG_PATH+"error.d/error."+str(today)+".log")
+			self.send_error = 1
+
+	def send(self):
+		if self.send_error == 1:
+			#os.system("mail "+CONFIG_EMAIL_TO+" -s '[auth2db error]' < "+CONFIG_PATH+"error.d/error."+str(today)+".log")
+
+			msg = "Please send the /etc/auth2db/error.d/error."+str(today)+".log to the Developers.\n"
+			msg = msg + "To check and FIX Auth2DB.\n"
+			msg = msg + "Thanks. \n\n"
+
+			email = ""
+			send_email("[auth2db error] ", email, msg)
+
+			print "Please send the /etc/auth2db/error.d/error."+str(today)+".log to the Developers."
+			print "To check and FIX Auth2DB."
+			print "Thanks. \n\n"
+
+
+def updateipsmbd():
+	# connect
+	db = MySQLdb.connect(host=CONFIG_HOST, user=CONFIG_USER, passwd=CONFIG_PASS, db=CONFIG_DB)
+
+	# create a cursor
+	cursor = db.cursor()
+	# execute SQL
+	#sql = "SELECT distinct pid,usuario from login WHERE (ip is NULL OR ip = '' OR ip = '-') AND tipo = 'smbd'";
+	sql = "SELECT distinct pid,usuario from login WHERE ip is NULL AND tipo = 'smbd'";
+	cursor.execute(sql)
+	result = cursor.fetchall()
+
+	for record in result:
+		pid = str(record[0])
+		usuario = record[1]
+
+		os.system("grep -r "+pid+" /var/log/samba/* > "+CONFIG_PATH_TMP+"tmpfile")
+		f = open(CONFIG_PATH_TMP+"tmpfile")
+		tmp = f.readline()
+
+		if tmp != "":
+
+			pos = tmp.index(":")
+			linea = tmp[pos+3:len(tmp)]
+
+			linea_array = string.split(linea, ' ')
+			machine = linea_array[0]
+
+			ip = linea_array[1].replace("(","")
+			ip = ip.replace(")","")
+
+			actualiza = db.cursor()
+			sql = "UPDATE login SET ip='"+ip+"', machine='"+machine+"' WHERE pid='"+pid+"' AND usuario='"+usuario+"' AND ip is NULL"
+			sql = "UPDATE log_"+ time.strftime('%Y') +'_'+ time.strftime('%m') +'_'+ time.strftime('%d') +" SET ip='"+ip+"', machine='"+machine+"' WHERE pid='"+pid+"' AND usuario='"+usuario+"' AND ip is NULL"
+			actualiza.execute(sql)
+		else:
+			actualiza = db.cursor()
+			sql = "UPDATE login SET ip='0.0.0.0' WHERE pid='"+pid+"' AND usuario='"+usuario+"' AND ip is NULL"
+			sql = "UPDATE log_"+ time.strftime('%Y') +'_'+ time.strftime('%m') +'_'+ time.strftime('%d') +" SET ip='0.0.0.0' WHERE pid='"+pid+"' AND usuario='"+usuario+"' AND ip is NULL"
+			actualiza.execute(sql)
+
+def updateipsshd():
+	# connect
+	db = MySQLdb.connect(host=CONFIG_HOST, user=CONFIG_USER, passwd=CONFIG_PASS, db=CONFIG_DB)
+
+	# create a cursor
+	cursor = db.cursor()
+	# execute SQL
+	sql = "UPDATE login AS t1 LEFT JOIN login AS t2 ON t2.action =  'Accepted' AND t2.tipo = 'sshd' AND t2.fecha = t1.fecha	SET t1.ip = t2.ip WHERE t1.action = 'opened' AND t1.tipo = 'sshd' AND t1.ip is NULL"
+	sql = "UPDATE log_"+ time.strftime('%Y') +'_'+ time.strftime('%m') +'_'+ time.strftime('%d') +" AS t1 LEFT JOIN log_"+ time.strftime('%Y') +'_'+ time.strftime('%m') +'_'+ time.strftime('%d') +" AS t2 ON t2.action =  'Accepted' AND t2.tipo = 'sshd' AND t2.fecha = t1.fecha	SET t1.ip = t2.ip WHERE t1.action = 'opened' AND t1.tipo = 'sshd' AND t1.ip is NULL"
+	sql = '''
+		UPDATE log_'''+ time.strftime('%Y') +'_'+ time.strftime('%m') +'_'+ time.strftime('%d') +''' 
+		    AS t1 LEFT JOIN log_'''+ time.strftime('%Y') +'_'+ time.strftime('%m') +'_'+ time.strftime('%d') +''' 
+		    AS t2 ON t2.action =  'Accepted' AND t2.tipo = 'sshd' AND t2.fecha = t1.fecha SET t1.ip = t2.ip 
+		WHERE t1.action = 'opened' AND t1.tipo = 'sshd' AND t1.ip is NULL
+	      '''
+
+	cursor.execute(sql)
+
+
+	sql = "UPDATE login SET ip = '0.0.0.0' WHERE action = 'opened' AND tipo = 'sshd' AND ip is NULL"
+	sql = "UPDATE log_"+ time.strftime('%Y') +'_'+ time.strftime('%m') +'_'+ time.strftime('%d') +" SET ip = '0.0.0.0' WHERE action = 'opened' AND tipo = 'sshd' AND ip is NULL"
+
+	cursor.execute(sql)
+
+
+# Objeto "Send()" Global
+obj_send_email = Send_Error()
+
+
+def punctuation(log):
+	'''Separa punctuacion'''
+	regex = r'''[a-zA-Z0-9]'''
+	subject = "aops::o AlkjasP= m ;_d.sdfsdf_ askjh7987_as.aa"
+
+	log = re.sub(regex, "", log)
+	log = re.sub(" ", "_", log)
+
+	return log
+
+
+# ---------------------------------------------------- #
+# Clase que crea el Hilo ALERT
+# ---------------------------------------------------- #
+class MyThreadAlert_OLD(threading.Thread):
+
+	def __init__(self):
+		threading.Thread.__init__(self)
+		self.setName("Thread-ALERT")
+
+	def run(self):
+
+		if len(sys.argv) > 1 and sys.argv[1] == "-d":
+			while 1:
+				os.system("auth2db-alert > /dev/null")
+				time.sleep(20)
+		else:
+			os.system("auth2db-alert")
+			time.sleep(2)
+
+
+# ---------------------------------------------------- #
+# Clase que crea el Hilo ALERT
+# ---------------------------------------------------- #
+class MyThreadAlert(threading.Thread):
+
+	def __init__(self):
+		threading.Thread.__init__(self)
+		self.setName("Thread-ALERT")
+
+		# connect
+		db = MySQLdb.connect(host=CONFIG_HOST, user=CONFIG_USER, passwd=CONFIG_PASS, db=CONFIG_DB)
+		# create a cursor
+		self.cursor = db.cursor(MySQLdb.cursors.DictCursor)
+
+	def run(self):
+
+		if len(sys.argv) > 1 and sys.argv[1] == "-d":
+			while 1:
+				self.alert()
+				time.sleep(5)
+		else:
+			self.alert()
+			time.sleep(5)
+
+	def alert(self):
+
+		# execute SQL
+		sql = "SELECT * from alert WHERE enabled = 1";
+		sql = "SELECT * from alert_config";
+		self.cursor.execute(sql)
+		result = self.cursor.fetchall()
+
+		for record in result:
+			alert.alert(int(record["id"]))
+
+
+
+# ---------------------------------------------------- #
+# Clase que crea el Hilo CLEANER
+# ---------------------------------------------------- #
+class MyThreadCleaner(threading.Thread):
+
+	def __init__(self):
+		threading.Thread.__init__(self)
+		self.setName("Thread-CLEANER")
+
+		# connect
+		db = MySQLdb.connect(host=CONFIG_HOST, user=CONFIG_USER, passwd=CONFIG_PASS, db=CONFIG_DB)
+		# create a cursor
+		self.cursor = db.cursor(MySQLdb.cursors.DictCursor)
+
+	def run(self):
+
+		if len(sys.argv) > 1 and sys.argv[1] == "-d":
+			while 1:
+				self.clean()
+				time.sleep(5)
+		else:
+			self.clean()
+			time.sleep(2)
+
+	def clean(self):
+
+		# execute SQL
+		sql = "SELECT * from filter WHERE enabled = 1";
+		self.cursor.execute(sql)
+		result = self.cursor.fetchall()
+
+		for record in result:
+			cleaner.MoveData('log', 'junk', int(record["id"]))
+
+
+# ---------------------------------------------------- #
+# Clase que crea el Hilo MONITOR
+# ---------------------------------------------------- #
+class MyThreadMonitor(threading.Thread):
+
+	def __init__(self):
+		threading.Thread.__init__(self)
+		self.setName("Thread-MONITOR")
+
+		# connect
+		db = MySQLdb.connect(host=CONFIG_HOST, user=CONFIG_USER, passwd=CONFIG_PASS, db=CONFIG_DB)
+		# create a cursor
+		self.cursor = db.cursor(MySQLdb.cursors.DictCursor)
+
+	def run(self):
+
+		if len(sys.argv) > 1 and sys.argv[1] == "-d":
+			while 1:
+				self.monitor()
+				time.sleep(5)
+		else:
+			self.monitor()
+			time.sleep(2)
+
+	def monitor(self):
+
+		# execute SQL
+		sql = "SELECT * from view WHERE enabled = 1";
+		self.cursor.execute(sql)
+		result = self.cursor.fetchall()
+
+		for record in result:
+			monitor.MonitorData(int(record["id"]))
+
+
+
+# ---------------------------------------------------- #
+# Clase que crea el Hilo CHECKER
+# ---------------------------------------------------- #
+class MyThreadChecker(threading.Thread):
+
+	def __init__(self):
+		threading.Thread.__init__(self)
+		self.setName("Thread-CHECKER")
+		self.running = 0
+		self.threads = ""
+
+		# connect
+		db = MySQLdb.connect(host=CONFIG_HOST, user=CONFIG_USER, passwd=CONFIG_PASS, db=CONFIG_DB)
+		# create a cursor
+		self.cursor = db.cursor(MySQLdb.cursors.DictCursor)
+
+	def run(self):
+
+		self.running = threading.activeCount()
+		self.threads = threading.enumerate()
+
+		if len(sys.argv) > 1 and sys.argv[1] == "-d":
+			while 1:
+				self.checker()
+				time.sleep(5)
+		else:
+			self.checker()
+			time.sleep(2)
+
+	def checker(self):
+
+		if self.running < threading.activeCount():
+			print ""
+			print "[\033[1;36m THREADS \033[1;37m-: " + str(threading.activeCount()) + " :\033[0;37;0m ]"
+			print "[\033[1;32m >> Se activaron Threads... \033[1;37m-: ]"
+			print ""
+			self.alive()
+
+		elif self.running > threading.activeCount():
+			print ""
+			print "[\033[1;36m THREADS \033[1;37m-: " + str(threading.activeCount()) + " :\033[0;37;0m ]"
+			#print "[\033[1;31m >> Se murio un Thread?? \033[1;37m-: ]"
+			self.alive()
+
+		else:
+			#print ""
+			print "[\033[1;36m THREADS \033[1;37m-: " + str(threading.activeCount()) + " :\033[0;37;0m ]"
+			print ""
+			self.alive()
+			pass
+
+	def alive(self):
+
+		# connect
+		db = MySQLdb.connect(host=CONFIG_HOST, user=CONFIG_USER, passwd=CONFIG_PASS, db=CONFIG_DB)
+		# create a cursor
+		cursor = db.cursor(MySQLdb.cursors.DictCursor)
+		# execute SQL
+		sql = "SELECT source FROM source WHERE enabled = 1;"
+
+		cursor.execute(sql)
+		result = cursor.fetchall()
+		'''
+		for record in result:
+			if MyThread(record["source"],record["source"],'action').isAlive():
+				print "estoy bien ;) >> " + str(record["source"])
+				pass
+			else:
+				#MyThread(record["source"],record["source"],'action').start()
+				print "se murio?! >> " + str(record["source"])
+		'''
+
+		for thread in self.threads:
+			#print thread.getName()
+			#print thread.isAlive()
+			
+			if thread.getName() == "MainThread":
+				pass
+
+			elif thread.getName() == "Thread-CHECKER":
+				pass
+
+			elif thread.getName() == "Thread-ALERT":
+				if thread.isAlive():
+					pass
+				else:
+					print "[\033[1;31m >> Restarting dead Thread... \033[1;37m-: " + thread.getName() + " ]"
+					CORE_LOGS("[CHECKER] | Restarting dead Thread > " + thread.getName() )
+					MyThreadAlert().start()
+					print ""
+
+			elif thread.getName() == "Thread-MONITOR":
+				if thread.isAlive():
+					pass
+				else:
+					print "[\033[1;31m >> Restarting dead Thread... \033[1;37m-: " + thread.getName() + " ]"
+					CORE_LOGS("[CHECKER] | Restarting dead Thread > " + thread.getName() )
+					MyThreadMonitor().start()
+					print ""
+
+			elif thread.getName() == "Thread-CLEANER":
+				if thread.isAlive():
+					pass
+				else:
+					print "[\033[1;31m >> Restarting dead Thread... \033[1;37m-: " + thread.getName() + " ]"
+					CORE_LOGS("[CHECKER] | Restarting dead Thread > " + thread.getName() )
+					MyThreadCleaner().start()
+					print ""
+
+			else:
+				if thread.isAlive():
+					pass
+				else:
+					print "[\033[1;31m >> Restarting dead Thread... \033[1;37m-: " + thread.getName() + " ]"
+					CORE_LOGS("[CHECKER] | Restarting dead Thread > " + thread.getName() )
+					source = string.replace(thread.getName(),'Thread-','')
+					MyThread(source,source,'action').start()
+					print ""
+
+		self.running = threading.activeCount()
+		self.threads = threading.enumerate()
+
+
+# ---------------------------------------------------- #
+# Clase que crea el Hilo CLEANER
+# ---------------------------------------------------- #
+def LoadSourceType():
+	'''Agrega nuevos tipos y Actions On The Fly'''    
+
+	# connect
+	db = MySQLdb.connect(host=CONFIG_HOST, user=CONFIG_USER, passwd=CONFIG_PASS, db=CONFIG_DB)
+	# create a cursor
+	cursor = db.cursor(MySQLdb.cursors.DictCursor)
+	# execute SQL
+
+	sql = "SELECT tipo_name, action_name FROM tipo_action_config WHERE tipo_name = '"+tipo+"' AND action_name = '"+action+"'"
+	#print sql
+
+	cursor.execute(sql)
+	result = cursor.fetchall()
+
+
+
+# ---------------------------------------------------- #
+# Clase que crea los Hilos
+# ---------------------------------------------------- #
+class MyThread(threading.Thread):
+
+	def __init__(self,source,section,action):
+		threading.Thread.__init__(self)
+		self.setName("Thread-"+section)
+		self.source = source
+		self.section = section
+		self.action = action
+		self.flag_txt = "inicial"
+		self.logs_txt = ""
+		self.logs_list = ""
+		self.logs_list_id = 0
+		self.log_lastsize = 0
+		self.line_time = 0
+		self.SECTION_TIPO = ""
+		self.CONFIG_ENABLED = ""
+		self.CONFIG_TYPE = ""
+		self.CONFIG_LOG = ""
+		self.CONFIG_ACTION = ""
+		self.CONFIG_REGEX = ""
+		#self.espera = 0
+
+	def run(self):
+		''' Experimental: Junta todos los Logs '''
+
+		self.lastLogLoad()
+
+		if len(sys.argv) > 1 and sys.argv[1] == "-d":
+			while 1:
+				self.dumpLog2DB(self.source)
+				time.sleep(2)
+		else:
+			self.dumpLog2DB(self.source)
+			time.sleep(2)
+
+
+	def run_OLD(self):
+
+		self.regexFiltersLoad()
+		self.flagLoad(self.section,self.CONFIG_TYPE,self.CONFIG_ACTION)
+
+		if len(sys.argv) > 1 and sys.argv[1] == "-d":
+			while 1:
+				self.regexFiltersGo()
+				time.sleep(2)
+		else:
+			self.regexFiltersGo()
+			time.sleep(2)
+
+			#print self.getName()
+
+
+	def regexFiltersLoad(self):
+		'''Carga Filtro para ser utilizado'''
+
+		self.SECTION_TIPO = self.section
+		self.section = config_filters[self.SECTION_TIPO]
+		self.CONFIG_ENABLED = self.section['enabled']
+		self.CONFIG_TYPE = self.section['type']
+		self.CONFIG_LOG = self.section['log']
+		self.CONFIG_ACTION = self.section['action']
+		self.CONFIG_REGEX = self.section['regex']
+
+
+	def regexFiltersGo(self):
+		'''Carga Filtro para ser utilizado'''
+
+		# Execute regex parser
+		if self.CONFIG_ENABLED == "true":
+			existe = os.path.exists(self.CONFIG_LOG) 
+			if existe:
+				self.regexAction(self.CONFIG_TYPE,self.CONFIG_LOG,self.CONFIG_REGEX,self.SECTION_TIPO,self.CONFIG_ACTION)
+
+				# UPDATE IP SSHD session 
+				if self.SECTION_TIPO == "sshd_session" and string.lower(UPDATE_IP_SSHD) == "y":
+					updateipsshd()
+
+				# UPDATE IP SMBD session (DISABLED)
+				##if self.SECTION_TIPO == "smbd_session":
+				##	updateipsmbd()
+
+
+			else:
+				print "["+str(self.SECTION_TIPO)+"]"
+				print "Log File "+self.CONFIG_LOG+" not exist."
+				print "-------------------------------"
+				print ""
+
+
+	def regexAction(self,tipo,archivolog,rawstr,section,action):
+		'''Inserta logs en la Base'''
+		print "que hago aca?"
+		server = socket.gethostname()
+
+		# connect
+		db = MySQLdb.connect(host=CONFIG_HOST, user=CONFIG_USER, passwd=CONFIG_PASS, db=CONFIG_DB)
+		# create a cursor
+		inserta = db.cursor()
+
+		compile_obj = re.compile(rawstr,  re.IGNORECASE| re.MULTILINE)
+
+		contador = 0  
+
+		self.viewLogs()
+
+		lista = string.split(self.logs_txt,"\n")
+
+		#for i in range(0,len(lista)):
+		for i in range(self.logs_list_id+1,len(self.logs_list)):
+
+			##print lista[i]
+			##print self.logs_list[i]
+			#result = re.search(rawstr, lista[i],  re.IGNORECASE| re.MULTILINE)
+			result = re.search(rawstr, self.logs_list[i],  re.IGNORECASE| re.MULTILINE)
+			##print "rawstr: "+str(rawstr)
+			##print "result: "+str(result)
+
+			if result:
+
+				flag = i
+
+				try:
+					year = mesreplace(result.group('year'))
+				except:
+					year = time.strftime('%Y')
+
+				month = mesreplace(result.group('month'))
+				day = result.group('day')
+				if len(day) == 1:
+					day = "0"+day
+				hour = result.group('hour')
+				#fecha = time.strftime('%Y') +'-'+ month +'-'+ day +' '+ hour
+
+				fecha = year +'-'+ month +'-'+ day +' '+ hour
+
+				if result.group('host') != "":
+					server = result.group('host')
+
+				#server = socket.gethostname()
+				#tipo = result.group('type')
+				pid = result.group('pid')
+				if pid == "":
+					pid = "0"
+
+				usuario = result.group('usuario')
+				usuario = string.replace(usuario,'illegal','')
+				usuario = string.replace(usuario,'invalid','')
+				usuario = string.replace(usuario,'user','')
+				usuario = string.replace(usuario,'from','')
+				usuario = string.replace(usuario,'=','')
+				usuario = string.strip(usuario)
+
+				action = result.group('action')
+
+				ip = result.group('ip')
+
+				#if tipo == "sshd" or tipo == "proftpd" or tipo == "apache":
+				#    ip = result.group('ip')
+				#elif tipo == "gdm" or tipo == "su" or tipo == "login":
+				#    ip = "127.0.0.1"
+
+				#detalle = lista[i]
+				detalle = self.cleanLog(self.logs_list[i])
+
+				# execute SQL
+				try:
+					if ip != "":
+						sql = "INSERT INTO login (fecha,server,tipo,pid,action,usuario,ip,detalle) VALUES('"+fecha+"','"+server+"','"+tipo+"','"+pid+"','"+action+"','"+usuario+"','"+ip+"','"+detalle+"')"
+					else:
+						sql = "INSERT INTO login (fecha,server,tipo,pid,action,usuario,detalle) VALUES('"+fecha+"','"+server+"','"+tipo+"','"+pid+"','"+action+"','"+usuario+"','"+detalle+"')"
+
+					inserta.execute(sql)
+					##print sql+"\n"
+
+
+					#print check_table("log_" + time.strftime('%Y') +"_"+ month +"_"+ day)
+
+					## Verifica si existe la tabla log_
+					if check_table("log_" + time.strftime('%Y') +"_"+ month +"_"+ day) == "create":
+
+						print "CREATE TABLE..."
+
+						#// Verifica que exista la tabla de LOGS
+						sql = '''
+					CREATE TABLE IF NOT EXISTS `log_''' + time.strftime('%Y') +'_'+ month +'_'+ day + '''` (
+					    `id` int(11) NOT NULL auto_increment,
+					    `fecha` datetime NOT NULL,
+					    `server` varchar(255) default NULL,
+					    `tipo` varchar(255) default NULL,
+					    `pid` int(11) NOT NULL,
+					    `action` varchar(255) default NULL,
+					    `usuario` varchar(255) default NULL,
+					    `ip` varchar(255) default NULL,
+					    `machine` varchar(255) default NULL,
+					    `detalle` text default NULL,
+					    PRIMARY KEY  (`id`)
+					) ;
+					 '''
+						inserta.execute(sql)
+						##print sql
+
+					# Si existe un nuevo tipo/action lo inserta en tipo_action_config table
+					##check_new_types(tipo,action)
+
+					# // INSERTA en la tabla de la fecha
+					if ip != "":
+						sql = "INSERT INTO log_"+ time.strftime('%Y') +'_'+ month +'_'+ day +" (fecha,server,tipo,pid,action,usuario,ip,detalle) VALUES('"+fecha+"','"+server+"','"+tipo+"','"+pid+"','"+action+"','"+usuario+"','"+ip+"','"+detalle+"')"
+					else:
+						sql = "INSERT INTO log_"+ time.strftime('%Y') +'_'+ month +'_'+ day +" (fecha,server,tipo,pid,action,usuario,detalle) VALUES('"+fecha+"','"+server+"','"+tipo+"','"+pid+"','"+action+"','"+usuario+"','"+detalle+"')"
+
+					inserta.execute(sql)
+					##print sql
+
+					# Check if HOST exists in host_config
+					obj_host_check.exists(server)
+
+					# Check if ACTION exists in tipo_action_config
+					obj_action_check.exists(tipo,action)
+
+					#print sql
+
+
+					contador = contador + 1
+					# Actualiza FLAG en memoria
+					self.flag_txt = detalle
+					##self.viewLogs()
+
+					if contador >= 500:
+						#goto .exit
+						break
+
+				except NameError, x:
+					#llama al objeto Send_Error()
+					#obj_send_email.excepcion(lista[i],x,str(tipo))
+					obj_send_email.excepcion(self.logs_list[i],x,str(tipo))
+
+
+
+	## NEW EXPERIMENTAL ALL LOG (From: regexAction)
+	#def dumpLog2DB(self,tipo,archivolog,rawstr,section,action):
+	def dumpLog2DB(self,archivolog):
+		'''Inserta logs en la Base'''
+
+		#regex = "(?P<month>january|jan|february|feb|march|mar|april|apr|may|june|jun|july|jul|august|aug|september|sep|october|oct|november|nov|december|dec)\s+(?P<day>3[01]|[0-2]{0,1}\d)\s+(?P<hour>\d{1,2}\:\d{1,2}\:\d{1,2})+\s+(?P<host>\b(?:\d{1,3}\.){3}\d{1,3}\b|\b\w+\b))"
+
+		rawstr = r"""(?P<month>jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\s+(?P<day>3[01]|[0-2]{0,1}\d)\s+(?P<hour>\d{1,2}\:\d{1,2}\:\d{1,2})\s+(?P<host>\b(?:\d{1,3}\.){3}\d{1,3}\b|\b\w+\b)"""
+		compile_obj = re.compile(rawstr,  re.IGNORECASE| re.MULTILINE)
+
+		server = socket.gethostname()
+
+		# connect
+		db = MySQLdb.connect(host=CONFIG_HOST, user=CONFIG_USER, passwd=CONFIG_PASS, db=CONFIG_DB)
+		# create a cursor
+		inserta = db.cursor()
+
+		##compile_obj = re.compile(rawstr,  re.IGNORECASE| re.MULTILINE)
+
+		# Load SourceTypeRegex
+		sql = "SELECT * FROM source_type"
+		#print sql
+		inserta.execute(sql)
+		result_sourcetype = inserta.fetchall()
+
+		contador = 0  
+
+		self.viewLogs()
+
+		lista = string.split(self.logs_txt,"\n")
+
+		for i in range(self.logs_list_id+1,len(self.logs_list)):
+
+			##result = re.search(rawstr, self.logs_list[i],  re.IGNORECASE| re.MULTILINE)
+
+			result = self.logs_list[i]
+
+			if result:
+
+				flag = i
+
+				#detalle = lista[i]
+				detalle = self.cleanLog(self.logs_list[i])
+
+				# EXTRAE PUNTUACION []
+				punct = punctuation(detalle)
+
+				##sql = "SELECT * FROM source_type"
+				#print sql
+				##inserta.execute(sql)
+				##result_sourcetype = inserta.fetchall()
+
+				sourcetype = "undefined"
+				#print result_sourcetype
+				for record_sourcetype in result_sourcetype:
+					try:
+						#print record_sourcetype
+						#print record_sourcetype[1]
+						#print record_sourcetype["source_type"]
+						if punct.index(record_sourcetype[2]) >= 0:
+							sourcetype = record_sourcetype[1]
+							rawstr = record_sourcetype[3]
+							#print "GOOOODDD!!!!*****"
+							#break
+					except:
+						pass
+						'''
+					etype = sys.exc_type
+					try:
+						ename = etype.__name__
+					except:
+						ename = etype
+					CORE_LOGS( "[dumpLog2DB >> SourceType] | " + str(ename) + " : " + str(sys.exc_value))
+					'''
+
+				data_extract = re.search(rawstr, detalle,  re.IGNORECASE| re.MULTILINE)
+				#print "rawstr: "+str(rawstr)
+				#print "result: "+str(data_extract)
+				#print detalle
+				#print data_extract.group('month')
+				#print data_extract.group('day')
+				#print data_extract.group('hour')
+				#print data_extract.group('host')
+
+				try:
+					year = data_extract.group('year')
+				except:
+					year = time.strftime('%Y')
+
+				try:
+					month = mesreplace(data_extract.group('month'))
+				except:
+					month = time.strftime('%m')
+
+				if len(month) == 1:
+					month = "0"+month
+
+
+				try:
+					day = data_extract.group('day')
+				except:
+					day = time.strftime('%d')
+
+				if len(day) == 1:
+					day = "0"+day
+
+
+				try:
+					hour = data_extract.group('hour')
+				except:
+					hour = time.strftime('%H:%M:%S')
+
+				try:
+					host = data_extract.group('host')
+				except:
+					host = socket.gethostname()
+
+
+
+				# execute SQL
+				try:
+
+					#print check_table("log_" + time.strftime('%Y') +"_"+ month +"_"+ day)
+
+					## Verifica si existe la tabla log_
+					if check_table("log_" + year +"_"+ month +"_"+ day) == "create":
+
+						print "CREATE TABLE..."
+
+						#// Verifica que exista la tabla de LOGS
+						sql = '''
+							CREATE TABLE IF NOT EXISTS `log_''' + year +'_'+ month +'_'+ day + '''` (
+							    `id` int(11) NOT NULL auto_increment,
+							    `fecha` datetime default '0000-00-00 00:00:00',
+							    `source` varchar(255) default NULL,
+							    `sourcetype` varchar(255) default NULL,
+							    `host` varchar(255) default NULL,
+							    `punct` varchar(255) default NULL,
+							    `tipo` varchar(255) default NULL,
+							    `pid` int(11) default 0,
+							    `action` varchar(255) default NULL,
+							    `usuario` varchar(255) default NULL,
+							    `ip` varchar(255) default NULL,
+							    `machine` varchar(255) default NULL,
+							    `detalle` text default NULL,
+							    PRIMARY KEY  (`id`)
+							) ;
+							'''
+						inserta.execute(sql)
+						##print sql
+
+					# Si existe un nuevo tipo/action lo inserta en tipo_action_config table
+					##check_new_types(tipo,action)
+
+					# // INSERTA en la tabla de la fecha
+
+					#sql = "INSERT INTO log_"+ year +'_'+ month +'_'+ day +" (fecha,source,detalle) VALUES('"+time.strftime('%Y-%m-%d %H:%M:%S')+"','"+self.source+"','"+detalle+"')"
+					sql = "INSERT INTO log_"+ year +'_'+ month +'_'+ day +" (fecha,source,sourcetype,host,punct,detalle) VALUES('"+year+"-"+month+"-"+day+" "+hour+"','"+self.source+"','"+sourcetype+"','"+host+"','"+punct+"','"+detalle+"')"
+
+					inserta.execute(sql)
+					##print sql
+
+					# Check if HOST exists in host_config
+					obj_host_check.exists(host)
+
+					# Check if ACTION exists in tipo_action_config
+					##obj_action_check.exists(tipo,action)
+
+					#print sql
+
+
+					contador = contador + 1
+					# Actualiza FLAG en memoria
+					self.flag_txt = detalle
+					###sql = "UPDATE source SET events=(events + 1), lastlog='"+detalle+"' WHERE source = '"+self.source+"'"
+					###inserta.execute(sql)
+					##self.viewLogs()
+
+					if contador >= 500:
+						#goto .exit
+						break
+
+				except:
+					#llama al objeto Send_Error()
+					#obj_send_email.excepcion(lista[i],x,str(tipo))
+					##obj_send_email.excepcion(self.logs_list[i],x,str(tipo))
+					#CORE_LOGS(str(x))
+					pass
+					etype = sys.exc_type
+					try:
+						ename = etype.__name__
+					except:
+						ename = etype
+					CORE_LOGS("[dumpLog2DB >> insert] | " + str(ename) + " : " + str(sys.exc_value))
+
+
+		if contador > 0:
+			sql = "UPDATE source SET events=(events + "+str(contador)+"), lastlog='"+detalle+"' WHERE source = '"+self.source+"'"
+			inserta.execute(sql)
+
+
+
+		#label .exit
+
+		# SHOW SCREEN DETAIL
+		##print "["+section+"]"
+		print "\033[1;34m name \033[1;37m-: " + self.getName() + " :\033[0;37;0m"
+		print "\033[1;32m path \033[1;37m-: " + archivolog + " :\033[0;37;0m"
+		#print "path: "+archivolog
+		print " inserts: "+str(contador)
+		print ""
+		print "\033[1;32m line \033[1;37m-: " + str(self.logs_list_id) + " :\033[0;37;0m"
+		print "\033[1;32m time \033[1;37m-: " + str(self.line_time) + " :\033[0;37;0m"
+		print "-------------------------------"
+
+		print ""
+
+
+	def flagLoad(self,section,tipo,action):
+
+		# connect
+		db = MySQLdb.connect(host=CONFIG_HOST, user=CONFIG_USER, passwd=CONFIG_PASS, db=CONFIG_DB)
+		# create a cursor
+		cursor = db.cursor(MySQLdb.cursors.DictCursor)
+		# execute SQL
+		sql = "SELECT detalle from login WHERE tipo = '"+tipo+"' AND detalle REGEXP '"+action+"' ORDER BY id DESC LIMIT 1"
+		#print sql
+		cursor.execute(sql)
+		result = cursor.fetchall()
+
+		detalle = "-"
+		for record in result:
+			detalle = record["detalle"]
+
+		self.flag_txt = detalle
+
+	## NEW EXPERIMENTAL ALL LOG (From: flagLoad)
+	def lastLogLoad(self):
+
+		# connect
+		db = MySQLdb.connect(host=CONFIG_HOST, user=CONFIG_USER, passwd=CONFIG_PASS, db=CONFIG_DB)
+		# create a cursor
+		cursor = db.cursor(MySQLdb.cursors.DictCursor)
+		# execute SQL
+		sql = "SELECT lastlog from source WHERE source = '"+self.source+"' AND lastlog is NOT NULL"
+		#print sql
+		cursor.execute(sql)
+		result = cursor.fetchall()
+
+		detalle = "-"
+		for record in result:
+			detalle = record["lastlog"]
+
+		self.flag_txt = detalle
+
+	def cleanLog(self,datatxt):
+
+		datatxt = datatxt.replace("'", "")
+		datatxt = datatxt.replace("`", "")
+		datatxt = datatxt.replace("  ", " ")
+		datatxt = datatxt.replace("  ", " ")
+		datatxt = datatxt.replace("  ", " ")
+		datatxt = datatxt.replace("  ", " ")
+		datatxt = datatxt.replace("  ", " ")
+		datatxt = datatxt.replace("  ", " ")
+		datatxt = datatxt.replace("  ", " ")
+		datatxt = datatxt.replace("  ", " ")
+		datatxt = datatxt.replace("\\", "/")
+		# ONLY FOR DEBUG -> FORWARDING -> server -> middle server -> auth2db
+		datatxt = datatxt.replace("Message forwarded from ", "")
+
+		return datatxt
+
+	def viewLogs(self):
+		'''Lee Logs Ej: /var/logs/...'''
+		v_start = time.time()
+
+		##output_tmp = commands.getoutput("grep -Ei '"+self.CONFIG_ACTION+"' "+self.CONFIG_LOG)
+		self.CONFIG_LOG = self.source
+
+		# READ LOG_FILE
+		##output_tmp = commands.getoutput("cat "+self.CONFIG_LOG)
+		f = open(self.CONFIG_LOG)
+		output_tmp = f.read()
+		f.close()
+
+		# LOG SIZE
+		if os.path.getsize(self.CONFIG_LOG) >= self.log_lastsize:
+			from_line = self.logs_list_id
+		else:
+			from_line = 0
+
+		##print "FROM LINE: " + str(from_line)
+		self.log_lastsize = os.path.getsize(self.CONFIG_LOG)
+
+
+		###output_tmp = self.cleanLog(output_tmp)
+
+		self.logs_list = string.split(output_tmp, '\n')
+		#print "len: "+str(len(lista_tmp))+" id: "+str(id(lista_tmp))
+
+		#valor = 0
+		valor = from_line
+		#self.logs_list_id = 0
+
+		self.flag_txt = self.cleanLog(self.flag_txt)
+
+		##print "++ >> " +  str(len(string.strip(self.flag_txt))) + " >> "  +  self.flag_txt
+		##print ""
+
+		#### SI el LEN es menor que el ultimo guardado, lee todo el file
+		#### SI es mayor, solo desde la posicion ultima
+		#### POSIBLE BUG: cuando el archivo es nuevo y hay pocas lineas....
+		#for linea in self.logs_list:
+		for i in range(valor,len(self.logs_list)):
+
+			#linea = self.cleanLog(linea)
+			linea = self.cleanLog(self.logs_list[i])
+
+			##print str(len(string.strip(linea)))
+			##print linea
+			##print ""
+
+			if string.strip(linea) == string.strip(self.flag_txt):
+				self.logs_list_id = valor
+				break
+				##print " ----------- OK ----------- "
+
+			valor = valor + 1
+
+		# debug: cuanto tarda?
+		v_end = time.time()
+		##print (v_end - v_start)
+		self.line_time = (v_end - v_start)
+
+
+# ---------------------------------------------------- #
+
+def check_table(table):
+	'''Verifica si la table existe'''
+
+	# connect
+	db = MySQLdb.connect(host=CONFIG_HOST, user=CONFIG_USER, passwd=CONFIG_PASS, db=CONFIG_DB)
+	# create a cursor
+	cursor = db.cursor(MySQLdb.cursors.DictCursor)
+
+	# execute SQL
+	sql = "SHOW TABLES LIKE '"+table+"'"
+	#print sql
+
+	cursor.execute(sql)
+	result = cursor.fetchall()
+
+	if len(result) == 0:
+		return "create"
+	else:
+		return "ok"
+
+def check_new_types(tipo,action):
+	'''Agrega nuevos tipos y Actions On The Fly'''    
+
+	# connect
+	db = MySQLdb.connect(host=CONFIG_HOST, user=CONFIG_USER, passwd=CONFIG_PASS, db=CONFIG_DB)
+	# create a cursor
+	cursor = db.cursor(MySQLdb.cursors.DictCursor)
+	# execute SQL
+
+	sql = "SELECT tipo_name, action_name FROM tipo_action_config WHERE tipo_name = '"+tipo+"' AND action_name = '"+action+"'"
+	#print sql
+
+	cursor.execute(sql)
+	result = cursor.fetchall()
+
+	if len(result) == 0:
+		sql = "INSERT INTO tipo_action_config (tipo_name, action_name) VALUES('"+tipo+"','"+action+"')"
+		cursor.execute(sql)
+
+
+def add_new_types():
+	'''Agrega nuevos Tipos y Actions'''
+
+
+	# connect
+	db = MySQLdb.connect(host=CONFIG_HOST, user=CONFIG_USER, passwd=CONFIG_PASS, db=CONFIG_DB)
+	# create a cursor
+	cursor = db.cursor(MySQLdb.cursors.DictCursor)
+	# execute SQL
+
+	sql = '''
+	    CREATE TABLE IF NOT EXISTS `tipo_action_config` (
+	        `id` int(11) NOT NULL auto_increment,
+	        `tipo_name` varchar(255) default NULL,
+	        `action_name` varchar(255) default NULL,
+	        `action_alias` varchar(255) default NULL,
+		`color` varchar(255) default NULL,
+	        PRIMARY KEY  (`id`)
+	    ) ;
+	  '''
+	#print sql
+
+	if check_table("tipo_action_config") == "create":
+		cursor.execute(sql)
+
+	#sql = "DELETE FROM tipo_action_config"
+	#cursor.execute(sql)
+
+	sql = "INSERT INTO tipo_action_config (tipo_name, action_name) SELECT DISTINCT tipo, action FROM login ORDER BY tipo "
+	#cursor.execute(sql)
+
+	sql = "SELECT DISTINCT tipo, action FROM login ORDER BY tipo;"
+	#print sql
+
+	cursor.execute(sql)
+	result = cursor.fetchall()
+
+	load_tipo = "-"
+	load_action = "-"
+	for record in result:
+		load_tipo = record["tipo"]
+		load_action = record["action"]
+
+		#print load_tipo + " - " + load_action
+
+		sql = "SELECT tipo_name, action_name FROM tipo_action_config WHERE tipo_name = '"+load_tipo+"' AND action_name = '"+load_action+"'"
+		#print sql
+		cursor.execute(sql)
+		result = cursor.fetchall()
+		#print result
+		#print len(result)
+
+		if len(result) == 0:
+			sql = "INSERT INTO tipo_action_config (tipo_name, action_name) VALUES('"+load_tipo+"','"+load_action+"')"
+			cursor.execute(sql)
+
+
+	print "Loading New Types...\n"
+	print "+ ---------------------------\n\n"
+
+
+# ---------------------------------------------------- #
+# Clase que revisa si hay nuevos HOSTS
+# ---------------------------------------------------- #
+class HostCheck_OLD:
+
+	def __init__(self):
+		self.result = ""
+		self.host_list = []
+
+	#def run(self):
+
+	#	self.load_hosts()
+
+	def load_hosts(self):
+
+		# connect
+		db = MySQLdb.connect(host=CONFIG_HOST, user=CONFIG_USER, passwd=CONFIG_PASS, db=CONFIG_DB)
+		# create a cursor
+		cursor = db.cursor(MySQLdb.cursors.DictCursor)
+		# execute SQL
+		sql = "SELECT hostname from host_config"
+		#print sql
+		cursor.execute(sql)
+		self.result = cursor.fetchall()
+		#print self.result
+
+		for record in self.result:
+			#print record["hostname"]
+			self.host_list.append(record["hostname"])
+
+	def exists(self,host):
+
+		if host not in self.host_list:
+			#print "not exists... " + host
+			self.add_host(host)
+
+
+	def add_host(self,host):
+
+		self.host_list.append(host)
+
+		# connect
+		db = MySQLdb.connect(host=CONFIG_HOST, user=CONFIG_USER, passwd=CONFIG_PASS, db=CONFIG_DB)
+		# create a cursor
+		cursor = db.cursor(MySQLdb.cursors.DictCursor)
+		# execute SQL
+		sql = "INSERT INTO host_config (hostname) VALUES ('"+host+"')"
+		#print sql
+		cursor.execute(sql)
+
+
+class HostCheck:
+
+	def __init__(self):
+		self.result = ""
+		self.host_list = []
+		# connect
+		db = MySQLdb.connect(host=CONFIG_HOST, user=CONFIG_USER, passwd=CONFIG_PASS, db=CONFIG_DB)
+		# create a cursor
+		self.cursor = db.cursor(MySQLdb.cursors.DictCursor)
+
+	#def run(self):
+
+	#	self.load_hosts()
+
+	def load_hosts(self):
+
+
+		# execute SQL
+		sql = "SELECT host from host"
+		#print sql
+		self.cursor.execute(sql)
+		self.result = self.cursor.fetchall()
+		#print self.result
+
+		for record in self.result:
+			#print record["hostname"]
+			self.host_list.append(record["host"])
+
+	def exists(self,host):
+
+		if host not in self.host_list:
+			print "not exists... " + host
+			self.add_host(host)
+		else:
+			try:
+				sql = "UPDATE host SET value = (value + 1) WHERE host = '" + host + "'"
+				##print ""
+				##print sql
+				self.cursor.execute(sql)
+				##print "#### >> Host has been added..."
+			except:
+				test = 0
+				#print ""
+				#print ">> ERROR UPDATE HOST..."
+				#print ""
+
+
+	def add_host(self,host):
+
+		self.host_list.append(host)
+
+		# connect
+		##db = MySQLdb.connect(host=CONFIG_HOST, user=CONFIG_USER, passwd=CONFIG_PASS, db=CONFIG_DB)
+		# create a cursor
+		##self.cursor = db.cursor(MySQLdb.cursors.DictCursor)
+		# execute SQL
+		sql = "INSERT INTO host (host,value) VALUES ('"+host+"',1)"
+		#print sql
+		self.cursor.execute(sql)
+
+
+# Objeto "HostCheck()" Global
+obj_host_check = HostCheck()
+
+
+# ---------------------------------------------------- #
+# Clase que revisa si hay nuevas ACTIONS
+# ---------------------------------------------------- #
+class ActionCheck:
+
+	def __init__(self):
+		self.result = ""
+		self.action_list = []
+
+	#def run(self):
+
+	#	self.load_hosts()
+
+	def load_actions(self):
+
+		# connect
+		db = MySQLdb.connect(host=CONFIG_HOST, user=CONFIG_USER, passwd=CONFIG_PASS, db=CONFIG_DB)
+		# create a cursor
+		cursor = db.cursor(MySQLdb.cursors.DictCursor)
+		# execute SQL
+		sql = "SELECT tipo_name, action_name from tipo_action_config"
+		#print sql
+		cursor.execute(sql)
+		self.result = cursor.fetchall()
+		#print self.result
+
+		for record in self.result:
+			#print record["hostname"]
+			self.action_list.append([record["tipo_name"], record["action_name"]])
+
+	def exists(self,tipo,action):
+
+		if [tipo,action] not in self.action_list:
+			#print "not exists... " + action + " : " + tipo
+			self.add_action(tipo,action)
+
+
+	def add_action(self,tipo,action):
+
+		self.action_list.append([tipo, action])
+
+		# connect
+		db = MySQLdb.connect(host=CONFIG_HOST, user=CONFIG_USER, passwd=CONFIG_PASS, db=CONFIG_DB)
+		# create a cursor
+		cursor = db.cursor(MySQLdb.cursors.DictCursor)
+		# execute SQL
+		sql = "INSERT INTO tipo_action_config (tipo_name, action_name) VALUES ('"+tipo+"','"+action+"')"
+		#print sql
+		cursor.execute(sql)
+
+
+# Objeto "HostCheck()" Global
+obj_action_check = ActionCheck()
+
+
+
+# ---------------------------
+# START
+# ---------------------------
+def main():
+
+	# Evalua si se paso el argumento -v
+	if len(sys.argv) > 1 and sys.argv[1] == "-v":
+		print "\nAuth2DB"
+		print "version: " + __version__
+		print "author: " + __author__
+		print "email: ezequielvera@yahoo.com.ar"
+		print "website: http://www.auth2db.com.ar"
+		print "copyright: " + __copyright__
+		print ""
+
+	else:		
+
+		MyThreadChecker().start()
+
+		# Busca Filtros Activos
+		rawstr = r"""(?P<section>(?<=^\[)\w+)"""
+		compile_obj = re.compile(rawstr,  re.IGNORECASE| re.MULTILINE)
+
+		file = open(CONFIG_PATH+"filters.conf")
+		datos = file.read()
+
+		##print "Load Hosts...\n"
+		obj_host_check.load_hosts()
+
+		##print "Load Actions...\n"
+		##obj_action_check.load_actions()
+
+		##print "Load Filters...\n"
+		#add_new_types()
+
+		##for result in compile_obj.finditer(datos):
+		##    section = config_filters[result.group('section')]
+		##    CONFIG_ENABLED = section['enabled']
+		##    CONFIG_ACTION = section['action']
+		##    if CONFIG_ENABLED == "true":
+		##    	print result.group('section')
+		##    	# Inicia Hilo
+		##    	MyThread(result.group('section'),CONFIG_ACTION).start()
+		##	
+		##	#MyThread(result.group('section'),CONFIG_ACTION).setName()
+
+		###MyThread('/var/log/local2.log','section','action').start()
+
+
+		# connect
+		db = MySQLdb.connect(host=CONFIG_HOST, user=CONFIG_USER, passwd=CONFIG_PASS, db=CONFIG_DB)
+		# create a cursor
+		cursor = db.cursor(MySQLdb.cursors.DictCursor)
+		# execute SQL
+		sql = "SELECT source FROM source WHERE enabled = 1;"
+
+		cursor.execute(sql)
+		result = cursor.fetchall()
+
+		for record in result:
+			MyThread(record["source"],record["source"],'action').start()
+
+
+		#if ACTIVE_ALERTS == "Y":
+		#    MyThreadAlert().start()
+
+		#print ""
+
+		# ---------->
+		# Lee las Vistas e inserta en monitor_*
+		time.sleep(2)
+		print "\033[1;33m START ALERT... \033[0;37;0m "
+		#print "START ALERT..."
+		MyThreadAlert().start()
+
+		# ---------->
+		# Lee los Filtros y manda a JUNK
+		time.sleep(2)
+		print "\033[1;33m START CLEANER... \033[0;37;0m "
+		#print "START CLEANER..."
+		MyThreadCleaner().start()
+
+		# ---------->
+		# Lee las Vistas e inserta en monitor_*
+		time.sleep(2)
+		print "\033[1;33m START MONITOR... \033[0;37;0m "
+		#print "START MONITOR..."
+		MyThreadMonitor().start()
+
+		# TEST CHECKER
+		#print threading.activeCount()
+		#MyThreadChecker().start()
+
+	obj_send_email.send()
+
+
+#Esta linea lanza la funcion principal si aun no esta lanzada
+if __name__ =='__main__':
+	try:
+		main()
+	except:
+		# print error message re exception
+		traceback.print_exc()
+		obj_send_email.excepcion(traceback.print_exc())
+		#CORE_LOGS(str(traceback.print_exc()))
+		pass
+		etype = sys.exc_type
+		try:
+			ename = etype.__name__
+		except:
+			ename = etype
+		CORE_LOGS("[MAIN] | " + str(ename) + " : " + str(sys.exc_value))

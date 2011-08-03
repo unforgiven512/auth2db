@@ -1,0 +1,75 @@
+#!/usr/bin/python
+
+import os
+import sys
+
+NAME="auth2db"
+PIDFILE="/var/run/"+NAME+".pid"
+
+def createDaemon():
+	'''create auth2db daemon...'''
+	
+	# create - fork 1
+	try:
+		if os.fork() > 0: os._exit(0) # exit father...
+	except OSError, error:
+		print 'fork #1 failed: %d (%s)' % (error.errno, error.strerror)
+		os._exit(1)
+
+	# it separates the son from the father
+	os.chdir('/')
+	os.setsid()
+	os.umask(0)
+
+	# create - fork 2
+	try:
+		pid = os.fork()
+		if pid > 0:
+                    fd = open(PIDFILE, 'w')
+                    fd.write(str(pid))
+                    fd.flush()
+                    print 'START auth2db daemon PID %d' % pid
+                    os._exit(0)
+	except OSError, error:
+            print 'fork #2 failed: %d (%s)' % (error.errno, error.strerror)
+            os._exit(1)
+
+	daemonAuth2db() # function daemon
+	
+def daemonAuth2db():
+
+	import time
+
+	# Start Auth2db with Threads
+	os.system("auth2db -d > /dev/null")
+	
+	while True:
+            #os.system("auth2db > /dev/null")
+            os.system("auth2db-alert > /dev/null")
+            time.sleep(2)
+            
+	
+if __name__ == '__main__':
+    if len(sys.argv) > 1 and sys.argv[1] == "start":
+        
+        existepid = os.path.exists(PIDFILE)
+        if existepid == 0:
+            createDaemon()
+        else:
+            print "auth2db is already running..."
+            sys.exit() 
+    
+    elif len(sys.argv) > 1 and sys.argv[1] == "stop":
+        
+        existepid = os.path.exists(PIDFILE)
+        if existepid:
+            fd = open( PIDFILE )
+            file_pid = fd.readline()
+            print 'STOP auth2db daemon PID '+str(file_pid)
+            os.system("killall auth2db")
+            os.system("kill "+file_pid)
+            os.system("rm "+PIDFILE)
+        else:
+            print "auth2db is not running..."
+    else:
+        print "Usage: auth2db-daemon start|stop"

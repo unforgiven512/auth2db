@@ -1,0 +1,7 @@
+TODO
+------------------------------------------
+
+- Documentar paso a paso donde va cada archivo de auth2db
+- Hacer graficos explicando escenarios y casos de uso
+- Publicar como surgió la idea
+- Explicar parseo del log (auth.log) y actualizacion de IPs que no se encuentran en el Log.
