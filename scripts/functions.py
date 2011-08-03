@@ -1,6 +1,8 @@
 #!/usr/bin/python
 
+# Import libraries
 import MySQLdb
+import sys
 
 # Import ConfigObj
 sys.path.insert(1,"/usr/share/auth2db/modules/")
